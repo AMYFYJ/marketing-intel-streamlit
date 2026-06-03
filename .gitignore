@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.tmp/
+
+# Streamlit/local secrets
+.streamlit/secrets.toml
+
+# Data artifacts
+data/*.csv
+data/*.parquet
+!data/.gitkeep
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,8 @@
+streamlit>=1.35
+pandas>=2.1
+numpy>=1.26
+plotly>=5.20
+requests>=2.31
+feedparser>=6.0
+scikit-learn>=1.4
+pytest>=8.0
