@@ -69,7 +69,8 @@ def fetch_demand_pulse(
         frames.append(frame)
         statuses.append(status)
 
-    combined = pd.concat([frame for frame in frames if not frame.empty], ignore_index=True) if frames else empty_trend_frame()
+    non_empty_frames = [frame for frame in frames if not frame.empty]
+    combined = pd.concat(non_empty_frames, ignore_index=True) if non_empty_frames else empty_trend_frame()
     if not combined.empty:
         combined["published_at"] = pd.to_datetime(combined["published_at"], errors="coerce", utc=True)
         combined["sentiment"] = combined.apply(lambda row: sentiment_score(f"{row['title']} {row['snippet']}"), axis=1)

@@ -81,7 +81,8 @@ def fetch_competitor_intelligence(
             frames.append(_trend_to_competitor_frame(trend_frame, competitor, "News mention"))
             statuses.append(status)
 
-    combined = pd.concat([frame for frame in frames if not frame.empty], ignore_index=True) if frames else empty_competitor_frame()
+    non_empty_frames = [frame for frame in frames if not frame.empty]
+    combined = pd.concat(non_empty_frames, ignore_index=True) if non_empty_frames else empty_competitor_frame()
     if not combined.empty:
         combined["published_at"] = pd.to_datetime(combined["published_at"], errors="coerce", utc=True)
         combined["cta"] = combined.apply(lambda row: detect_cta(f"{row['title']} {row['text']}"), axis=1)

@@ -98,3 +98,13 @@ def test_fetch_competitor_intelligence_combines_link_sources() -> None:
     assert len(items) == 1
     assert set(statuses["source"]) == {"Meta Ad Library", "TikTok Creative Center"}
     assert items.loc[0, "competitor"] == "Acme"
+
+
+def test_fetch_competitor_intelligence_handles_all_empty_sources() -> None:
+    items, statuses = fetch_competitor_intelligence(
+        CompetitorQuery(competitors=("Acme",), keywords=("AI",), max_items_per_source=5),
+        sources=("Meta Ad Library",),
+    )
+
+    assert items.empty
+    assert statuses.loc[0, "status"] == "not configured"

@@ -122,3 +122,14 @@ def test_fetch_gdelt_reports_rate_limit() -> None:
 
     assert frame.empty
     assert status["status"] == "rate limited"
+
+
+def test_fetch_demand_pulse_handles_all_empty_sources(tmp_path) -> None:
+    items, statuses = fetch_demand_pulse(
+        TrendQuery(keywords=("AI marketing",)),
+        sources=("Google Trends export",),
+        data_dir=tmp_path,
+    )
+
+    assert items.empty
+    assert statuses.loc[0, "status"] == "not configured"
