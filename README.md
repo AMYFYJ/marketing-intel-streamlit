@@ -1,20 +1,101 @@
 # Marketing Intel Streamlit
 
-A deployable Streamlit dashboard suite for digital advertising performance, competitor intelligence, demand pulse monitoring, and media mix planning.
+A deployable Streamlit dashboard suite for digital advertising performance, competitor creative intelligence, demand pulse monitoring, and media mix planning.
 
 Public repo: https://github.com/AMYFYJ/marketing-intel-streamlit
 
-## What It Does
+## Why This App Exists
 
-- **Performance**: paid-media KPI command center with campaign filters, ROAS/CPA/CTR/CVR metrics, anomaly flags, and action recommendations.
-- **Competitor Intelligence**: competitor and creative monitoring across Meta Ad Library, TikTok Creative Center, YouTube, Reddit, and GDELT/news.
-- **Demand Pulse**: live demand monitoring for marketing topics using GDELT, Reddit, optional YouTube, and trend exports.
-- **Budget Optimizer**: 250k-row synthetic media-mix dataset with spend allocation, diminishing-return logic, and CSV/API connector paths.
-- **Data Sources**: source attribution and deployment notes.
+Modern marketing teams have plenty of data, but the useful signals are scattered across ad platforms, public trend sources, competitor libraries, exports, and campaign spreadsheets. This app turns those disconnected inputs into a practical command center for answering:
+
+- Which paid media segments are working, wasting budget, or showing fatigue?
+- What are competitors saying in their ads, content, and public mentions?
+- Which demand signals are timely enough to turn into campaigns?
+- Where should the next budget dollar go?
+- Which data sources are live, optional, missing, or limited?
+
+The app is designed for marketers, founders, analysts, and growth teams who need fast directional intelligence without building a full warehouse or paid BI stack first.
+
+## Pain Points It Solves
+
+- **Fragmented reporting**: performance, competitor, demand, and budget planning usually live in separate tools.
+- **Noisy trend monitoring**: public signals are hard to rank by urgency, source confidence, and campaign usefulness.
+- **Manual competitor research**: ad libraries and social/news searches expose signals, but not clean creative briefs or next-test recommendations.
+- **Unclear budget decisions**: ROAS, CPA, marginal return, risk, and saturation need to be evaluated together.
+- **Optional API gaps**: dashboards often break when a paid API key is missing; this app degrades gracefully with preview data, public links, or no-key sources.
+- **Low actionability**: raw tables are useful, but teams need recommendations, watchlists, and exportable briefs.
+
+## Feature Overview
+
+### Performance
+
+The Performance tab is a paid media command center for the Kaggle **Digital Advertising Campaign Performance Dataset** or a deterministic fallback sample.
+
+Use it to:
+
+- Filter by date, platform, objective, industry, device, creative format, and budget tier.
+- Compare spend, revenue, profit, ROAS, CPA, CTR, CVR, and conversions against the previous period.
+- Spot highlights such as top segment, largest profit lift, fatigue watch, scale candidates, and budget at risk.
+- Explore trend splits, rolling KPI pulse, day-of-week patterns, segment contribution, movement, and heatmaps.
+- Triage campaigns with health scores, anomaly flags, action reasons, search, sorting, and CSV export.
+- Model simple spend-change scenarios for directional planning.
+
+### Competitor Intelligence
+
+The Competitor Intelligence tab monitors observed competitor creative and messaging signals across Meta Ad Library, TikTok Creative Center, YouTube, Reddit, and GDELT/news.
+
+Use it to:
+
+- Enter competitors, themes, market, sources, and item limits from a compact command bar.
+- Review source health so missing API keys or live-link-only sources are easy to understand.
+- See signal summary cards for share-of-voice leader, top theme, top CTA, newest signal, and test-next ideas.
+- Decode creative patterns by theme, CTA, sentiment, freshness, source confidence, and signal strength.
+- Turn public signals into an action board of `Test next`, `Open source`, `Watch`, `Archive`, or `Fix source`.
+- Export creative test briefs for planning and team handoff.
+
+Competitive sources are treated as observed signals, not proof of competitor spend, CTR, CPA, or ROAS.
+
+### Demand Pulse
+
+The Demand Pulse tab turns public category, social, video, and trend-export signals into campaign hooks and content priorities.
+
+Use it to:
+
+- Monitor demand around keywords such as categories, customer problems, competitor terms, or channel themes.
+- Combine no-key GDELT and Reddit signals with optional YouTube, Google Trends export, and Pinterest export inputs.
+- Review a demand brief with active keywords, source coverage, rising topic, urgency, sentiment shift, audience language, and next move.
+- Explore velocity, sentiment vs volume, keyword/source heatmaps, and freshness distribution.
+- Classify signals by intent such as pain, question, comparison, purchase research, or general mention.
+- Generate campaign hooks and export demand briefs while filtering out high-noise signals.
+
+Demand Pulse surfaces directional public signals, not exact market size, spend, or conversion forecasts.
+
+### Budget Optimizer
+
+The Budget Optimizer tab uses a 250k-row synthetic media-mix dataset by default, with a CSV normalization path and connector stubs for future real data.
+
+Use it to:
+
+- Set total budget, target ROAS, target CPA, risk tolerance, objective, and excluded platforms.
+- Review expected revenue, profit, conversions, CPA, and ROAS.
+- Compare recommended allocation by platform.
+- Inspect the efficiency frontier across expected CPA, expected ROAS, allocation, and platform.
+- See allocation actions such as increase or maintain based on marginal return, risk, and saturation.
+
+### Data Sources
+
+The Data Sources tab documents what powers each workflow and how optional connectors behave.
+
+Use it to:
+
+- Confirm supported campaign CSV names.
+- See which public/no-key sources are available.
+- Understand which secrets unlock optional APIs.
+- Review limitations such as Meta API access, TikTok Creative Center live links, GDELT rate limits, and synthetic optimizer data.
 
 ## Data Sources
 
-### Primary campaign dataset
+### Primary Campaign Dataset
 
 The app is designed around the Kaggle **Digital Advertising Campaign Performance Dataset**:
 
@@ -29,7 +110,7 @@ Place the downloaded CSV in `data/` using one of these names:
 
 If no CSV is present, the app uses a deterministic fallback campaign sample with the same metric schema so the dashboard remains deployable.
 
-### Live and optional sources
+### Live and Optional Sources
 
 - GDELT Doc API for news/category pulse: https://docs.gdeltproject.org/
 - Reddit RSS search for public social mentions.
@@ -64,7 +145,7 @@ META_ACCESS_TOKEN = ""
 META_GRAPH_VERSION = "v21.0"
 ```
 
-The app runs without these secrets. YouTube and Meta API calls will show `not configured` status and fall back to public links or other sources.
+The app runs without these secrets. YouTube and Meta API calls show `not configured` status and fall back to public links, preview snapshots, exports, or other no-key sources.
 
 ## Streamlit Community Cloud Deployment
 
@@ -79,4 +160,5 @@ The app runs without these secrets. YouTube and Meta API calls will show `not co
 - Meta Ad Library API access is optional and separate from private Meta campaign API access.
 - TikTok Creative Center does not expose a stable public API in this implementation, so the app provides live deep links rather than scraping.
 - GDELT rate-limits frequent calls; the app surfaces `rate limited` status and uses Streamlit caching.
+- Public competitor and demand sources are directional signals, not verified media performance metrics.
 - The synthetic optimizer dataset is generated in memory and is not committed to the repo.
