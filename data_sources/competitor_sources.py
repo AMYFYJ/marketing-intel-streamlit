@@ -28,6 +28,14 @@ THEME_TERMS = {
     "Education": ("guide", "webinar", "learn", "tips"),
 }
 
+SOURCE_CONFIDENCE = {
+    "ok": 1.0,
+    "live link": 0.62,
+    "rate limited": 0.35,
+    "not configured": 0.25,
+    "failed": 0.15,
+}
+
 
 @dataclass(frozen=True)
 class CompetitorQuery:
@@ -187,6 +195,139 @@ def analyze_creative_patterns(items: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def enrich_competitor_items(items: pd.DataFrame, statuses: pd.DataFrame, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Add proxy decision fields for creative monitoring.
+
+    Public competitive sources show observed creative and mention signals, not paid-media
+    performance. These fields intentionally score recency, source access, and copy patterns.
+    """
+    expected = empty_competitor_frame().columns.tolist() + [
+        "cta",
+        "theme",
+        "sentiment",
+        "freshness_days",
+        "source_confidence",
+        "source_confidence_label",
+        "signal_strength",
+        "creative_angle",
+        "priority",
+        "recommended_action",
+    ]
+    if items.empty:
+        return pd.DataFrame(columns=expected)
+
+    current_time = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+    if current_time.tzinfo is None:
+        current_time = current_time.tz_localize("UTC")
+
+    df = items.copy()
+    df["published_at"] = pd.to_datetime(df["published_at"], errors="coerce", utc=True).fillna(current_time)
+    if "cta" not in df:
+        df["cta"] = df.apply(lambda row: detect_cta(f"{row['title']} {row['text']}"), axis=1)
+    if "theme" not in df:
+        df["theme"] = df.apply(lambda row: detect_theme(f"{row['title']} {row['text']}"), axis=1)
+    if "sentiment" not in df:
+        df["sentiment"] = df.apply(lambda row: sentiment_score(f"{row['title']} {row['text']}"), axis=1)
+
+    df["freshness_days"] = ((current_time - df["published_at"]).dt.total_seconds() / 86_400).clip(lower=0).fillna(0)
+    df["source_confidence"] = _source_confidence(df, statuses)
+    df["source_confidence_label"] = df["source_confidence"].map(_confidence_label)
+    df["signal_strength"] = _signal_strength(df)
+    df["creative_angle"] = df.apply(_creative_angle, axis=1)
+    df["priority"] = df.apply(_priority, axis=1)
+    df["recommended_action"] = df.apply(_recommended_action, axis=1)
+    return df
+
+
+def summarize_competitive_signals(items: pd.DataFrame, statuses: pd.DataFrame) -> dict[str, object]:
+    enriched = enrich_competitor_items(items, statuses) if "signal_strength" not in items.columns else items
+    active_statuses = statuses[statuses["status"].isin(["ok", "live link"])] if not statuses.empty else pd.DataFrame()
+    gap_statuses = statuses[~statuses["status"].isin(["ok", "live link"])] if not statuses.empty else pd.DataFrame()
+    if enriched.empty:
+        return {
+            "items": 0,
+            "active_sources": int(active_statuses["source"].nunique()) if not active_statuses.empty else 0,
+            "source_gaps": int(len(gap_statuses)),
+            "sov_leader": "No data",
+            "top_theme": "No data",
+            "top_cta": "No data",
+            "newest_signal": "No data",
+            "test_next": 0,
+            "avg_signal_strength": 0.0,
+        }
+
+    sov = compute_share_of_voice(enriched)
+    sov_leader = sov.sort_values("share_of_voice", ascending=False).iloc[0]["competitor"] if not sov.empty else "No data"
+    top_theme = str(enriched["theme"].value_counts().idxmax()) if "theme" in enriched else "No data"
+    top_cta = str(enriched["cta"].value_counts().idxmax()) if "cta" in enriched else "No data"
+    newest = enriched.sort_values("published_at", ascending=False).iloc[0]
+    return {
+        "items": int(len(enriched)),
+        "active_sources": int(active_statuses["source"].nunique()) if not active_statuses.empty else int(enriched["source"].nunique()),
+        "source_gaps": int(len(gap_statuses)),
+        "sov_leader": str(sov_leader),
+        "top_theme": top_theme,
+        "top_cta": top_cta,
+        "newest_signal": f"{newest['competitor']} · {newest['source']}",
+        "test_next": int(enriched["recommended_action"].eq("Test next").sum()),
+        "avg_signal_strength": float(enriched["signal_strength"].mean()),
+    }
+
+
+def build_theme_cta_matrix(items: pd.DataFrame) -> pd.DataFrame:
+    if items.empty:
+        return pd.DataFrame()
+    matrix = (
+        items.groupby(["theme", "cta"], as_index=False)
+        .agg(signals=("title", "count"), avg_strength=("signal_strength", "mean"))
+        .sort_values(["signals", "avg_strength"], ascending=[False, False])
+    )
+    return matrix.pivot(index="theme", columns="cta", values="signals").fillna(0)
+
+
+def build_strategy_recommendations(items: pd.DataFrame) -> pd.DataFrame:
+    columns = ["priority", "recommended_action", "competitor", "creative_angle", "rationale", "representative_signal", "url"]
+    if items.empty:
+        return pd.DataFrame(columns=columns)
+
+    rows = []
+    grouped = (
+        items.groupby(["competitor", "theme", "cta", "recommended_action"], as_index=False)
+        .agg(
+            signals=("title", "count"),
+            avg_strength=("signal_strength", "mean"),
+            newest=("published_at", "max"),
+            avg_sentiment=("sentiment", "mean"),
+        )
+        .sort_values(["recommended_action", "avg_strength", "signals"], ascending=[False, False, False])
+    )
+    for _, row in grouped.iterrows():
+        sample = items[
+            (items["competitor"].eq(row["competitor"]))
+            & (items["theme"].eq(row["theme"]))
+            & (items["cta"].eq(row["cta"]))
+            & (items["recommended_action"].eq(row["recommended_action"]))
+        ].sort_values("signal_strength", ascending=False).iloc[0]
+        rows.append(
+            {
+                "priority": _priority(sample),
+                "recommended_action": row["recommended_action"],
+                "competitor": row["competitor"],
+                "creative_angle": _creative_angle(sample),
+                "rationale": (
+                    f"{int(row['signals'])} signals, average strength {row['avg_strength']:.0f}, "
+                    f"sentiment {row['avg_sentiment']:.2f}."
+                ),
+                "representative_signal": sample["title"],
+                "url": sample["url"],
+            }
+        )
+    return pd.DataFrame(rows, columns=columns).sort_values(
+        ["priority", "recommended_action"],
+        key=lambda series: series.map({"High": 0, "Medium": 1, "Low": 2, "Fix source": 3}).fillna(4),
+    )
+
+
 def detect_cta(text: str) -> str:
     lowered = str(text).lower()
     for label, patterns in CTA_PATTERNS.items():
@@ -248,3 +389,84 @@ def _first(values: object) -> str:
     if isinstance(values, str):
         return values
     return ""
+
+
+def _source_confidence(items: pd.DataFrame, statuses: pd.DataFrame) -> pd.Series:
+    if statuses.empty:
+        return pd.Series(0.5, index=items.index)
+    lookup = statuses.copy()
+    lookup["source"] = lookup["source"].astype(str)
+    lookup["keyword"] = lookup["keyword"].astype(str)
+    lookup["confidence"] = lookup["status"].map(SOURCE_CONFIDENCE).fillna(0.4)
+    exact = lookup.drop_duplicates(["source", "keyword"]).set_index(["source", "keyword"])["confidence"].to_dict()
+    by_source = lookup.groupby("source")["confidence"].max().to_dict()
+    values = []
+    for _, row in items.iterrows():
+        key = (str(row["source"]), str(row["keyword"]))
+        values.append(float(exact.get(key, by_source.get(str(row["source"]), 0.5))))
+    return pd.Series(values, index=items.index)
+
+
+def _confidence_label(value: float) -> str:
+    if value >= 0.8:
+        return "Direct source"
+    if value >= 0.55:
+        return "Live reference"
+    if value >= 0.3:
+        return "Partial"
+    return "Needs setup"
+
+
+def _signal_strength(items: pd.DataFrame) -> pd.Series:
+    recency_score = 1 / (1 + items["freshness_days"] / 14)
+    cta_score = items["cta"].ne("No explicit CTA").astype(float)
+    theme_score = items["theme"].ne("General").astype(float)
+    sentiment_score_abs = items["sentiment"].abs().clip(upper=1)
+    engagement_score = _percentile(items["engagement"].fillna(0))
+    strength = (
+        items["source_confidence"] * 30
+        + recency_score * 25
+        + cta_score * 15
+        + theme_score * 15
+        + sentiment_score_abs * 5
+        + engagement_score * 10
+    )
+    return strength.clip(0, 100).round(1)
+
+
+def _percentile(series: pd.Series) -> pd.Series:
+    if series.nunique(dropna=True) <= 1:
+        return pd.Series(0.5, index=series.index)
+    return series.rank(pct=True).fillna(0.5)
+
+
+def _creative_angle(row: pd.Series) -> str:
+    theme = str(row.get("theme", "General"))
+    cta = str(row.get("cta", "No explicit CTA"))
+    if cta == "No explicit CTA":
+        return theme
+    if theme == "General":
+        return cta
+    return f"{theme} + {cta}"
+
+
+def _priority(row: pd.Series) -> str:
+    if float(row.get("source_confidence", 0)) < 0.3:
+        return "Fix source"
+    if float(row.get("signal_strength", 0)) >= 72:
+        return "High"
+    if float(row.get("signal_strength", 0)) >= 48:
+        return "Medium"
+    return "Low"
+
+
+def _recommended_action(row: pd.Series) -> str:
+    if float(row.get("source_confidence", 0)) < 0.3:
+        return "Fix source"
+    if str(row.get("asset_type", "")).lower() == "live search link":
+        return "Open source"
+    if float(row.get("signal_strength", 0)) >= 72:
+        return "Test next"
+    if float(row.get("freshness_days", 99)) <= 21 or float(row.get("signal_strength", 0)) >= 48:
+        return "Watch"
+    return "Archive"

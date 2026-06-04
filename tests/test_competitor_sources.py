@@ -1,15 +1,22 @@
 from __future__ import annotations
 
+import pandas as pd
+
 from data_sources.competitor_sources import (
     CompetitorQuery,
     analyze_creative_patterns,
+    build_strategy_recommendations,
+    build_theme_cta_matrix,
     compute_share_of_voice,
     detect_cta,
     detect_theme,
+    enrich_competitor_items,
+    empty_competitor_frame,
     fetch_competitor_intelligence,
     fetch_meta_ad_library,
     fetch_tiktok_creative_center_link,
     parse_competitors,
+    summarize_competitive_signals,
 )
 
 
@@ -108,3 +115,89 @@ def test_fetch_competitor_intelligence_handles_all_empty_sources() -> None:
 
     assert items.empty
     assert statuses.loc[0, "status"] == "not configured"
+
+
+def test_enrich_competitor_items_adds_decision_fields() -> None:
+    items = pd.DataFrame(
+        [
+            {
+                "source": "Meta Ad Library",
+                "competitor": "Acme",
+                "keyword": "Acme AI",
+                "asset_type": "Ad",
+                "title": "Start free trial for new AI workflow automation",
+                "text": "Save time with AI automation and trusted workflow proof.",
+                "url": "https://example.com/ad",
+                "published_at": "2026-01-25",
+                "author": "Acme",
+                "platforms": "facebook, instagram",
+                "engagement": 12.0,
+            }
+        ],
+        columns=empty_competitor_frame().columns,
+    )
+    statuses = pd.DataFrame(
+        [{"source": "Meta Ad Library", "keyword": "Acme AI", "status": "ok", "detail": "1 ad"}]
+    )
+
+    enriched = enrich_competitor_items(items, statuses, now=pd.Timestamp("2026-02-01T00:00:00Z"))
+
+    assert enriched.loc[0, "source_confidence_label"] == "Direct source"
+    assert enriched.loc[0, "creative_angle"] == "AI + Free trial"
+    assert enriched.loc[0, "priority"] == "High"
+    assert enriched.loc[0, "recommended_action"] == "Test next"
+    assert enriched.loc[0, "freshness_days"] == 7
+    assert enriched.loc[0, "signal_strength"] > 70
+
+
+def test_enrich_competitor_items_marks_setup_gaps() -> None:
+    items = pd.DataFrame(
+        [
+            {
+                "source": "Meta Ad Library",
+                "competitor": "Acme",
+                "keyword": "Acme AI",
+                "asset_type": "Ad",
+                "title": "AI launch",
+                "text": "Learn more about AI automation.",
+                "url": "https://example.com/ad",
+                "published_at": "2026-01-25",
+                "author": "Acme",
+                "platforms": "facebook",
+                "engagement": 0.0,
+            }
+        ],
+        columns=empty_competitor_frame().columns,
+    )
+    statuses = pd.DataFrame(
+        [{"source": "Meta Ad Library", "keyword": "Acme AI", "status": "not configured", "detail": "missing token"}]
+    )
+
+    enriched = enrich_competitor_items(items, statuses, now=pd.Timestamp("2026-02-01T00:00:00Z"))
+
+    assert enriched.loc[0, "priority"] == "Fix source"
+    assert enriched.loc[0, "recommended_action"] == "Fix source"
+    assert enriched.loc[0, "source_confidence_label"] == "Needs setup"
+
+
+def test_signal_summaries_matrix_and_recommendations_are_stable() -> None:
+    first, first_status = fetch_tiktok_creative_center_link("Acme AI", "Acme")
+    second, _ = fetch_tiktok_creative_center_link("Beta automation", "Beta")
+    items = pd.concat([first, second], ignore_index=True)
+    statuses = pd.DataFrame(
+        [
+            first_status,
+            {"source": "TikTok Creative Center", "keyword": "Beta automation", "status": "live link", "detail": "link"},
+        ]
+    )
+
+    enriched = enrich_competitor_items(items, statuses, now=pd.Timestamp("2026-02-01T00:00:00Z"))
+    summary = summarize_competitive_signals(enriched, statuses)
+    matrix = build_theme_cta_matrix(enriched)
+    recommendations = build_strategy_recommendations(enriched)
+
+    assert summary["items"] == 2
+    assert summary["active_sources"] == 1
+    assert summary["source_gaps"] == 0
+    assert not matrix.empty
+    assert set(recommendations["recommended_action"]) == {"Open source"}
