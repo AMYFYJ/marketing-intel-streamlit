@@ -4,13 +4,19 @@ import pandas as pd
 
 from data_sources.trend_sources import (
     TrendQuery,
+    build_keyword_source_matrix,
+    build_signal_opportunities,
+    classify_signal_intent,
     compute_trend_summary,
+    empty_trend_frame,
+    enrich_demand_signals,
     fetch_demand_pulse,
     fetch_gdelt,
     fetch_youtube,
     parse_keywords,
     recommend_campaign_angles,
     sentiment_score,
+    summarize_demand_brief,
 )
 
 
@@ -133,3 +139,128 @@ def test_fetch_demand_pulse_handles_all_empty_sources(tmp_path) -> None:
 
     assert items.empty
     assert statuses.loc[0, "status"] == "not configured"
+
+
+def test_classify_signal_intent_categories() -> None:
+    assert classify_signal_intent("How should brands use AI marketing?") == "Question"
+    assert classify_signal_intent("Best retail media platform vs marketplace ads") == "Comparison"
+    assert classify_signal_intent("Pricing and demo for campaign reporting tool") == "Purchase research"
+    assert classify_signal_intent("expensive problem with weak attribution") == "Pain"
+    assert classify_signal_intent("category news update") == "General mention"
+
+
+def test_enrich_demand_signals_scores_actionable_items() -> None:
+    items = pd.DataFrame(
+        [
+            {
+                "source": "GDELT",
+                "keyword": "AI marketing",
+                "title": "How should teams use AI marketing for growth?",
+                "url": "https://example.com/ai",
+                "published_at": "2026-02-01T00:00:00Z",
+                "snippet": "new popular opportunity with strong workflow tips",
+                "author": "example.com",
+                "engagement": 10.0,
+            }
+        ],
+        columns=empty_trend_frame().columns,
+    )
+    statuses = pd.DataFrame([{"source": "GDELT", "keyword": "AI marketing", "status": "ok", "detail": "1 article"}])
+
+    enriched = enrich_demand_signals(items, statuses, now=pd.Timestamp("2026-02-01T02:00:00Z"))
+
+    assert enriched.loc[0, "source_confidence_label"] == "Direct"
+    assert enriched.loc[0, "intent"] == "Question"
+    assert enriched.loc[0, "noise_risk"] == "Low"
+    assert enriched.loc[0, "urgency_score"] >= 72
+    assert enriched.loc[0, "recommended_action"] == "Test now"
+    assert enriched.loc[0, "priority"] == "High"
+    assert "how-to content" in enriched.loc[0, "campaign_hook"]
+
+
+def test_enrich_demand_signals_marks_setup_and_noise_risks() -> None:
+    items = pd.DataFrame(
+        [
+            {
+                "source": "YouTube",
+                "keyword": "ads",
+                "title": "ads update",
+                "url": "https://example.com/ads",
+                "published_at": "2026-01-01T00:00:00Z",
+                "snippet": "general update",
+                "author": "channel",
+                "engagement": 0.0,
+            },
+            {
+                "source": "GDELT",
+                "keyword": "ads",
+                "title": "ads update",
+                "url": "https://example.com/noise",
+                "published_at": "2026-01-01T00:00:00Z",
+                "snippet": "general update",
+                "author": "example.com",
+                "engagement": 0.0,
+            },
+        ],
+        columns=empty_trend_frame().columns,
+    )
+    statuses = pd.DataFrame(
+        [
+            {"source": "YouTube", "keyword": "ads", "status": "not configured", "detail": "missing key"},
+            {"source": "GDELT", "keyword": "ads", "status": "ok", "detail": "1 article"},
+        ]
+    )
+
+    enriched = enrich_demand_signals(items, statuses, now=pd.Timestamp("2026-02-01T00:00:00Z"))
+
+    assert enriched.loc[0, "recommended_action"] == "Fix source"
+    assert enriched.loc[0, "priority"] == "Fix source"
+    assert enriched.loc[1, "noise_risk"] == "High"
+    assert enriched.loc[1, "recommended_action"] == "Ignore/noisy"
+
+
+def test_demand_brief_matrix_and_opportunities_are_stable() -> None:
+    now = pd.Timestamp("2026-02-01T00:00:00Z")
+    items = pd.DataFrame(
+        [
+            {
+                "source": "GDELT",
+                "keyword": "retail media",
+                "title": "Retail media growth creates a strong opportunity",
+                "url": "https://example.com/retail",
+                "published_at": now,
+                "snippet": "best measurement solution and popular new launch",
+                "author": "example.com",
+                "engagement": 8.0,
+            },
+            {
+                "source": "Reddit",
+                "keyword": "retail media",
+                "title": "Why is retail media attribution expensive?",
+                "url": "https://example.com/reddit",
+                "published_at": now - pd.Timedelta(hours=6),
+                "snippet": "problem and complaint from media buyers",
+                "author": "u/example",
+                "engagement": 5.0,
+            },
+        ],
+        columns=empty_trend_frame().columns,
+    )
+    statuses = pd.DataFrame(
+        [
+            {"source": "GDELT", "keyword": "retail media", "status": "ok", "detail": "1 article"},
+            {"source": "Reddit", "keyword": "retail media", "status": "ok", "detail": "1 post"},
+        ]
+    )
+
+    enriched = enrich_demand_signals(items, statuses, now=now)
+    summary = compute_trend_summary(enriched)
+    brief = summarize_demand_brief(enriched, statuses)
+    matrix = build_keyword_source_matrix(enriched)
+    opportunities = build_signal_opportunities(enriched, summary)
+
+    assert brief["active_keywords"] == 1
+    assert brief["source_coverage"] == "2/2"
+    assert brief["rising_topic"] == "retail media"
+    assert not matrix.empty
+    assert set(opportunities["keyword"]) == {"retail media"}
