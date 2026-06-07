@@ -48,6 +48,50 @@ METRIC_OPTIONS = {
     "Frequency": "frequency",
 }
 
+FRONTIER_METRIC_OPTIONS = {
+    "Spend": "spend",
+    "Revenue": "revenue",
+    "Profit": "profit",
+    "ROAS": "roas",
+    "CPA": "cpa",
+    "CTR": "ctr",
+    "CVR": "cvr",
+    "Conversions": "conversions",
+    "Impressions": "impressions",
+    "CPC (Cost per Click)": "cpc",
+}
+
+DIAGNOSTIC_DIMENSION_OPTIONS = {
+    "Platform": "platform",
+    "Objective": "objective",
+    "Audience": "audience_segment",
+    "Creative format": "creative_format",
+}
+
+LEADERBOARD_METRIC_OPTIONS = {
+    "Profit": "profit",
+    "ROAS": "roas",
+    "CPA": "cpa",
+    "CVR": "cvr",
+}
+
+TOP_MOVER_METRIC_OPTIONS = {
+    "Profit": "profit",
+    "ROAS": "roas",
+    "CPA": "cpa",
+    "Conversions": "conversions",
+}
+
+FUNNEL_LEAKAGE_STEPS = {
+    "Reach / Impr.": ("reach", "impressions"),
+    "Click / Impr.": ("clicks", "impressions"),
+    "LPV / Click": ("landing_page_view", "clicks"),
+    "Cart / LPV": ("add_to_cart", "landing_page_view"),
+    "Conv. / Cart": ("conversions", "add_to_cart"),
+    "Conv. / Click": ("conversions", "clicks"),
+    "Conv. / Impr.": ("conversions", "impressions"),
+}
+
 AGGREGATE_COLUMNS = [
     "spend",
     "revenue",
@@ -76,6 +120,10 @@ COLOR_SEQUENCE = [
     "#ca8a04",
     "#db2777",
 ]
+
+DEFAULT_MAX_SEGMENTS = 10
+DEFAULT_TARGET_ROAS = 2.0
+DEFAULT_TARGET_CPA = 80.0
 
 
 @dataclass(frozen=True)
@@ -131,7 +179,7 @@ def render() -> None:
         ["Overview", "Trend Explorer", "Segment Lens", "Campaign Lab"]
     )
     with overview_tab:
-        _render_overview(prepared, controls)
+        _render_overview(prepared, previous, controls)
     with trends_tab:
         _render_trend_explorer(prepared, controls)
     with segments_tab:
@@ -190,18 +238,6 @@ def _render_controls(data: pd.DataFrame) -> DashboardControls:
             creatives = f5.multiselect("Creative formats", unique_sorted(data, "creative_format"), default=[])
             tiers = f6.multiselect("Budget tiers", unique_sorted(data, "budget_tier"), default=[])
 
-            s1, s2, s3, s4 = st.columns(4)
-            trend_label = s1.selectbox("Trend split", list(DIMENSION_OPTIONS), index=0)
-            segment_label = s2.selectbox("Segment lens", list(DIMENSION_OPTIONS), index=0)
-            heatmap_label = s3.selectbox("Heatmap rows", list(DIMENSION_OPTIONS), index=1)
-            top_n = s4.slider("Top segments", min_value=5, max_value=25, value=12, step=1)
-
-            b1, b2, b3, b4 = st.columns(4)
-            min_spend = b1.number_input("Minimum row spend", min_value=0, max_value=100_000, value=0, step=100)
-            target_roas = b2.number_input("Target ROAS", min_value=0.1, max_value=20.0, value=2.0, step=0.1)
-            target_cpa = b3.number_input("Target CPA", min_value=1, max_value=2_500, value=80, step=5)
-            show_labels = b4.toggle("Show chart labels", value=False)
-
     granularity = {"Daily": "D", "Weekly": "W-MON", "Monthly": "MS"}[granularity_label]
     return DashboardControls(
         filters=CampaignFilters(
@@ -216,15 +252,15 @@ def _render_controls(data: pd.DataFrame) -> DashboardControls:
         ),
         primary_metric=METRIC_OPTIONS[primary_metric_label],
         primary_metric_label=primary_metric_label,
-        trend_dimension=DIMENSION_OPTIONS[trend_label],
-        segment_dimension=DIMENSION_OPTIONS[segment_label],
-        heatmap_dimension=DIMENSION_OPTIONS[heatmap_label],
+        trend_dimension=DIMENSION_OPTIONS["Platform"],
+        segment_dimension=DIMENSION_OPTIONS["Platform"],
+        heatmap_dimension=DIMENSION_OPTIONS["Objective"],
         granularity=granularity,
-        min_spend=float(min_spend),
-        target_roas=float(target_roas),
-        target_cpa=float(target_cpa),
-        top_n=int(top_n),
-        show_labels=bool(show_labels),
+        min_spend=0.0,
+        target_roas=DEFAULT_TARGET_ROAS,
+        target_cpa=DEFAULT_TARGET_CPA,
+        top_n=DEFAULT_MAX_SEGMENTS,
+        show_labels=False,
     )
 
 
@@ -360,7 +396,7 @@ def _build_highlight_cards(current: pd.DataFrame, previous: pd.DataFrame, contro
     ]
 
 
-def _render_overview(frame: pd.DataFrame, controls: DashboardControls) -> None:
+def _render_overview(frame: pd.DataFrame, previous: pd.DataFrame, controls: DashboardControls) -> None:
     left, right = st.columns([1.35, 1])
     with left:
         st.markdown("#### Spend, Revenue, and Profit")
@@ -386,49 +422,212 @@ def _render_overview(frame: pd.DataFrame, controls: DashboardControls) -> None:
         st.markdown("#### Funnel Health")
         _render_funnel(frame)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("#### Action Mix")
-        action = frame.groupby("recommendation", as_index=False).agg(
-            rows=("campaign_id", "count"),
-            spend=("spend", "sum"),
-            profit=("profit", "sum"),
-        )
-        fig = px.bar(
-            action,
-            x="recommendation",
-            y="spend",
-            color="recommendation",
-            text="spend" if controls.show_labels else None,
-            color_discrete_map={"Scale": "#059669", "Watch": "#2563eb", "Optimize": "#f97316", "Pause": "#dc2626"},
-            labels={"recommendation": "", "spend": "Spend"},
-        )
-        fig.update_traces(texttemplate="$%{text:,.0f}", textposition="outside")
-        fig.update_layout(showlegend=False, margin=dict(l=10, r=10, t=20, b=10))
-        st.plotly_chart(fig, config=PLOTLY_CONFIG)
+    mover_col, frontier_col = st.columns(2)
+    with mover_col:
+        _render_top_movers(frame, previous, controls)
+    with frontier_col:
+        _render_efficiency_frontier(frame, controls)
 
-    with c2:
-        st.markdown("#### Efficiency Frontier")
-        frontier = _aggregate_by(frame, ["platform", "objective"])
-        fig = px.scatter(
-            frontier,
-            x="cpa",
-            y="roas",
-            size="spend",
-            color="platform",
-            hover_name="objective",
-            color_discrete_sequence=COLOR_SEQUENCE,
-            labels={"cpa": "CPA", "roas": "ROAS", "spend": "Spend"},
+    d1, d2 = st.columns(2)
+    with d1:
+        _render_segment_performance_leaderboard(frame, controls)
+    with d2:
+        _render_funnel_leakage_by_segment(frame, controls)
+
+
+def _render_top_movers(frame: pd.DataFrame, previous: pd.DataFrame, controls: DashboardControls) -> None:
+    st.markdown("#### Selected-period Trend for Top Movers")
+    dimension_labels = list(DIAGNOSTIC_DIMENSION_OPTIONS)
+    metric_labels = list(TOP_MOVER_METRIC_OPTIONS)
+    default_dimension = (
+        dimension_labels.index(_label_for_dimension(controls.segment_dimension, DIAGNOSTIC_DIMENSION_OPTIONS))
+        if controls.segment_dimension in DIAGNOSTIC_DIMENSION_OPTIONS.values()
+        else 0
+    )
+    m1, m2 = st.columns(2)
+    dimension_label = m1.selectbox(
+        "Mover segment",
+        dimension_labels,
+        index=default_dimension,
+        key="performance_mover_dimension",
+    )
+    metric_label = m2.selectbox(
+        "Mover metric",
+        metric_labels,
+        index=metric_labels.index("Profit"),
+        key="performance_mover_metric",
+    )
+    dimension = DIAGNOSTIC_DIMENSION_OPTIONS[dimension_label]
+    metric = TOP_MOVER_METRIC_OPTIONS[metric_label]
+    movers = _top_movers(frame, previous, dimension, metric, min(controls.top_n, 6))
+    if movers.empty:
+        st.info("Previous-period data is not available for this mover view.")
+        return
+
+    mover_values = movers[dimension].tolist()
+    trend = _time_series(frame[frame[dimension].isin(mover_values)], controls.granularity, dimension)
+    if trend.empty:
+        return
+    fig = px.line(
+        trend,
+        x="period",
+        y=metric,
+        color=dimension,
+        markers=True,
+        color_discrete_sequence=COLOR_SEQUENCE,
+        labels={"period": "", metric: metric_label, dimension: dimension_label},
+    )
+    fig.update_layout(
+        hovermode="x unified",
+        legend_title_text="",
+        margin=dict(l=10, r=10, t=20, b=10),
+        height=360,
+    )
+    _format_axis_by_metric(fig, "y", metric)
+    st.plotly_chart(fig, config=PLOTLY_CONFIG)
+
+
+def _render_efficiency_frontier(frame: pd.DataFrame, controls: DashboardControls) -> None:
+    st.markdown("#### Efficiency Frontier")
+    axis_labels = list(FRONTIER_METRIC_OPTIONS)
+    axis_left, axis_right = st.columns(2)
+    x_axis_label = axis_left.selectbox(
+        "X-axis metric",
+        axis_labels,
+        index=axis_labels.index("CPA"),
+        key="performance_frontier_x_metric",
+    )
+    y_axis_label = axis_right.selectbox(
+        "Y-axis metric",
+        axis_labels,
+        index=axis_labels.index("ROAS"),
+        key="performance_frontier_y_metric",
+    )
+    x_metric = FRONTIER_METRIC_OPTIONS[x_axis_label]
+    y_metric = FRONTIER_METRIC_OPTIONS[y_axis_label]
+
+    frontier = _aggregate_by(frame, ["platform", "objective"])
+    fig = px.scatter(
+        frontier,
+        x=x_metric,
+        y=y_metric,
+        size="spend",
+        color="platform",
+        hover_name="objective",
+        color_discrete_sequence=COLOR_SEQUENCE,
+        labels={
+            x_metric: x_axis_label,
+            y_metric: y_axis_label,
+            "platform": "Platform",
+            "spend": "Spend",
+        },
+    )
+    _add_frontier_target_lines(fig, x_metric, y_metric, controls)
+    _format_frontier_axes(fig, x_metric, y_metric)
+    fig.update_layout(legend_title_text="Platform", margin=dict(l=10, r=10, t=20, b=10))
+    st.plotly_chart(fig, config=PLOTLY_CONFIG)
+
+
+def _render_segment_performance_leaderboard(frame: pd.DataFrame, controls: DashboardControls) -> None:
+    st.markdown("#### Segment Performance Leaderboard")
+    dimension_labels = list(DIAGNOSTIC_DIMENSION_OPTIONS)
+    metric_labels = list(LEADERBOARD_METRIC_OPTIONS)
+    default_dimension = (
+        dimension_labels.index(_label_for_dimension(controls.segment_dimension, DIAGNOSTIC_DIMENSION_OPTIONS))
+        if controls.segment_dimension in DIAGNOSTIC_DIMENSION_OPTIONS.values()
+        else 0
+    )
+    l1, l2 = st.columns(2)
+    dimension_label = l1.selectbox(
+        "Leaderboard segment",
+        dimension_labels,
+        index=default_dimension,
+        key="performance_leaderboard_dimension",
+    )
+    metric_label = l2.selectbox(
+        "Leaderboard metric",
+        metric_labels,
+        index=metric_labels.index("Profit"),
+        key="performance_leaderboard_metric",
+    )
+    dimension = DIAGNOSTIC_DIMENSION_OPTIONS[dimension_label]
+    metric = LEADERBOARD_METRIC_OPTIONS[metric_label]
+    leaderboard = _ranked_segments(frame, dimension, metric, controls.top_n)
+    if leaderboard.empty:
+        st.info("No segment data is available for the selected leaderboard metric.")
+        return
+
+    leaderboard = leaderboard.copy()
+    leaderboard["display_value"] = leaderboard[metric].map(lambda value: _format_metric_value(float(value), metric))
+    fig = px.bar(
+        leaderboard,
+        x=metric,
+        y=dimension,
+        orientation="h",
+        color=metric,
+        text="display_value" if controls.show_labels else None,
+        color_continuous_scale="RdYlGn_r" if metric == "cpa" else "RdYlGn",
+        labels={metric: metric_label, dimension: ""},
+    )
+    fig.update_yaxes(autorange="reversed")
+    fig.update_layout(coloraxis_colorbar_title=metric_label, margin=dict(l=10, r=10, t=20, b=10))
+    if controls.show_labels:
+        fig.update_traces(texttemplate="%{text}", textposition="outside")
+    _format_axis_by_metric(fig, "x", metric)
+    st.plotly_chart(fig, config=PLOTLY_CONFIG)
+
+
+def _render_funnel_leakage_by_segment(frame: pd.DataFrame, controls: DashboardControls) -> None:
+    st.markdown("#### Funnel Leakage by Segment")
+    dimension_labels = list(DIAGNOSTIC_DIMENSION_OPTIONS)
+    default_dimension = (
+        dimension_labels.index(_label_for_dimension(controls.segment_dimension, DIAGNOSTIC_DIMENSION_OPTIONS))
+        if controls.segment_dimension in DIAGNOSTIC_DIMENSION_OPTIONS.values()
+        else 0
+    )
+    dimension_label = st.selectbox(
+        "Funnel segment",
+        dimension_labels,
+        index=default_dimension,
+        key="performance_funnel_dimension",
+    )
+    dimension = DIAGNOSTIC_DIMENSION_OPTIONS[dimension_label]
+    funnel = _funnel_leakage_matrix(frame, dimension, controls.top_n)
+    if funnel.empty:
+        st.info("No funnel data is available for the selected segment.")
+        return
+
+    normalized = _normalize_rate_matrix(funnel)
+    text = funnel.apply(lambda column: column.map(_pct))
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=normalized.values,
+            x=list(normalized.columns),
+            y=[str(value) for value in normalized.index],
+            text=text.values,
+            texttemplate="%{text}",
+            colorscale="RdYlGn",
+            showscale=False,
+            hovertemplate="Segment: %{y}<br>Stage: %{x}<br>Rate: %{text}<extra></extra>",
         )
-        fig.add_hline(y=controls.target_roas, line_dash="dash", line_color="#059669", annotation_text="Target ROAS")
-        fig.add_vline(x=controls.target_cpa, line_dash="dash", line_color="#dc2626", annotation_text="Target CPA")
-        fig.update_layout(margin=dict(l=10, r=10, t=20, b=10))
-        st.plotly_chart(fig, config=PLOTLY_CONFIG)
+    )
+    fig.update_yaxes(autorange="reversed")
+    fig.update_xaxes(tickangle=35)
+    fig.update_layout(margin=dict(l=10, r=10, t=20, b=10))
+    st.plotly_chart(fig, config=PLOTLY_CONFIG)
+    st.markdown(_funnel_metric_help_html(), unsafe_allow_html=True)
 
 
 def _render_trend_explorer(frame: pd.DataFrame, controls: DashboardControls) -> None:
     st.markdown("#### Metric Trend by Segment")
-    split = controls.trend_dimension
+    split_label = st.selectbox(
+        "Trend split",
+        list(DIMENSION_OPTIONS),
+        index=list(DIMENSION_OPTIONS.values()).index(controls.trend_dimension),
+        key="performance_trend_split_local",
+        help="Choose the segment dimension used to draw separate trend lines.",
+    )
+    split = DIMENSION_OPTIONS[split_label]
     top_segments = (
         _aggregate_by(frame, [split])
         .sort_values(controls.primary_metric, ascending=False)
@@ -488,19 +687,37 @@ def _render_trend_explorer(frame: pd.DataFrame, controls: DashboardControls) -> 
 
 
 def _render_segment_lens(current: pd.DataFrame, previous: pd.DataFrame, controls: DashboardControls) -> None:
+    lens_control, heatmap_control = st.columns(2)
+    segment_label = lens_control.selectbox(
+        "Segment lens",
+        list(DIMENSION_OPTIONS),
+        index=list(DIMENSION_OPTIONS.values()).index(controls.segment_dimension),
+        key="performance_segment_lens_local",
+        help="Choose the dimension used for segment contribution, movement, and detail tables.",
+    )
+    heatmap_label = heatmap_control.selectbox(
+        "Heatmap rows",
+        list(DIMENSION_OPTIONS),
+        index=list(DIMENSION_OPTIONS.values()).index(controls.heatmap_dimension),
+        key="performance_heatmap_rows_local",
+        help="Choose the row dimension for the cross-dimension heatmap.",
+    )
+    segment_dimension = DIMENSION_OPTIONS[segment_label]
+    heatmap_dimension = DIMENSION_OPTIONS[heatmap_label]
+
     left, right = st.columns([1.15, 1])
     with left:
         st.markdown("#### Segment Contribution")
-        segment = _aggregate_by(current, [controls.segment_dimension]).sort_values(controls.primary_metric, ascending=False).head(controls.top_n)
+        segment = _aggregate_by(current, [segment_dimension]).sort_values(controls.primary_metric, ascending=False).head(controls.top_n)
         fig = px.bar(
             segment,
             x=controls.primary_metric,
-            y=controls.segment_dimension,
+            y=segment_dimension,
             orientation="h",
             color="roas",
             text=controls.primary_metric if controls.show_labels else None,
             color_continuous_scale="RdYlGn",
-            labels={controls.primary_metric: controls.primary_metric_label, controls.segment_dimension: ""},
+            labels={controls.primary_metric: controls.primary_metric_label, segment_dimension: ""},
         )
         fig.update_yaxes(autorange="reversed")
         fig.update_layout(coloraxis_colorbar_title="ROAS", margin=dict(l=10, r=10, t=20, b=10))
@@ -508,7 +725,7 @@ def _render_segment_lens(current: pd.DataFrame, previous: pd.DataFrame, controls
 
     with right:
         st.markdown("#### Period Movement")
-        movement = _segment_movement(current, previous, controls.segment_dimension).head(controls.top_n)
+        movement = _segment_movement(current, previous, segment_dimension).head(controls.top_n)
         if movement.empty:
             st.info("Previous-period data is not available for this date range.")
         else:
@@ -518,7 +735,7 @@ def _render_segment_lens(current: pd.DataFrame, previous: pd.DataFrame, controls
                 y="profit_delta",
                 size="current_spend",
                 color="roas_delta",
-                hover_name=controls.segment_dimension,
+                hover_name=segment_dimension,
                 color_continuous_scale="RdBu",
                 labels={
                     "spend_delta": "Spend change",
@@ -533,7 +750,7 @@ def _render_segment_lens(current: pd.DataFrame, previous: pd.DataFrame, controls
             st.plotly_chart(fig, config=PLOTLY_CONFIG)
 
     st.markdown("#### Cross-Dimension Heatmap")
-    heatmap = _heatmap_frame(current, controls.heatmap_dimension, controls.segment_dimension, controls.primary_metric)
+    heatmap = _heatmap_frame(current, heatmap_dimension, segment_dimension, controls.primary_metric)
     if heatmap.empty:
         st.info("Choose two different dimensions with enough data to populate the heatmap.")
     else:
@@ -541,13 +758,17 @@ def _render_segment_lens(current: pd.DataFrame, previous: pd.DataFrame, controls
             heatmap,
             aspect="auto",
             color_continuous_scale="Viridis",
-            labels=dict(color=controls.primary_metric_label, x=controls.segment_dimension.replace("_", " ").title(), y=controls.heatmap_dimension.replace("_", " ").title()),
+            labels=dict(
+                color=controls.primary_metric_label,
+                x=segment_dimension.replace("_", " ").title(),
+                y=heatmap_dimension.replace("_", " ").title(),
+            ),
         )
         fig.update_layout(margin=dict(l=10, r=10, t=20, b=10))
         st.plotly_chart(fig, config=PLOTLY_CONFIG)
 
     st.markdown("#### Segment Detail")
-    detail = _aggregate_by(current, [controls.segment_dimension]).sort_values(controls.primary_metric, ascending=False)
+    detail = _aggregate_by(current, [segment_dimension]).sort_values(controls.primary_metric, ascending=False)
     st.dataframe(
         _format_table(detail.head(controls.top_n * 2)),
         width="stretch",
@@ -655,6 +876,120 @@ def _render_funnel(frame: pd.DataFrame) -> None:
     )
     fig.update_layout(margin=dict(l=10, r=10, t=20, b=10), height=350)
     st.plotly_chart(fig, config=PLOTLY_CONFIG)
+
+
+def _label_for_dimension(dimension: str, options: dict[str, str]) -> str:
+    for label, column in options.items():
+        if column == dimension:
+            return label
+    return next(iter(options))
+
+
+def _ranked_segments(frame: pd.DataFrame, dimension: str, metric: str, limit: int) -> pd.DataFrame:
+    segment = _aggregate_by(frame, [dimension])
+    if segment.empty:
+        return segment
+
+    if metric == "cpa":
+        segment = segment[(segment["conversions"] > 0) & (segment["cpa"] > 0)]
+    elif metric == "cvr":
+        segment = segment[segment["clicks"] > 0]
+
+    ascending = metric == "cpa"
+    return segment.sort_values(metric, ascending=ascending).head(limit)
+
+
+def _top_movers(current: pd.DataFrame, previous: pd.DataFrame, dimension: str, metric: str, limit: int) -> pd.DataFrame:
+    movement = _segment_movement(current, previous, dimension)
+    delta_column = f"{metric}_delta"
+    if movement.empty or delta_column not in movement:
+        return pd.DataFrame()
+
+    if metric == "cpa":
+        movement = movement[(movement["current_conversions"] > 0) | (movement["previous_conversions"] > 0)]
+
+    movement = movement.copy()
+    movement["abs_delta"] = movement[delta_column].abs()
+    movement = movement[movement["abs_delta"] > 0]
+    return movement.sort_values("abs_delta", ascending=False).head(limit)
+
+
+def _funnel_leakage_matrix(frame: pd.DataFrame, dimension: str, limit: int) -> pd.DataFrame:
+    segment = _aggregate_by(frame, [dimension]).sort_values("spend", ascending=False).head(limit)
+    if segment.empty:
+        return pd.DataFrame()
+    matrix = pd.DataFrame(index=segment[dimension].astype(str))
+    for label, (numerator, denominator) in FUNNEL_LEAKAGE_STEPS.items():
+        matrix[label] = _divide(segment[numerator], segment[denominator]).to_numpy()
+    return matrix
+
+
+def _funnel_metric_help_html() -> str:
+    return """
+    <div class="mi-axis-help">
+        <span class="mi-axis-help-label">Metrics Guide</span>
+        <span
+            aria-label="Reach / Impr.: unique reach divided by impressions. Click / Impr.: clicks divided by impressions. LPV / Click: landing page views divided by clicks. Cart / LPV: add-to-carts divided by landing page views. Conv. / Cart: conversions divided by add-to-carts. Conv. / Click: conversions divided by clicks. Conv. / Impr.: conversions divided by impressions."
+            class="mi-axis-help-icon"
+            title="Reach / Impr.: unique reach divided by impressions&#10;Click / Impr.: clicks divided by impressions&#10;LPV / Click: landing page views divided by clicks&#10;Cart / LPV: add-to-carts divided by landing page views&#10;Conv. / Cart: conversions divided by add-to-carts&#10;Conv. / Click: conversions divided by clicks&#10;Conv. / Impr.: conversions divided by impressions"
+        >?</span>
+        <div class="mi-axis-help-tooltip">
+            <div><strong>Reach / Impr.</strong>: unique reach divided by impressions; lower values imply more repeated exposure.</div>
+            <div><strong>Click / Impr.</strong>: clicks divided by impressions; this is CTR, or ad engagement.</div>
+            <div><strong>LPV / Click</strong>: landing page views divided by clicks; shows how much click traffic reached the site.</div>
+            <div><strong>Cart / LPV</strong>: add-to-carts divided by landing page views; shows product or offer interest.</div>
+            <div><strong>Conv. / Cart</strong>: conversions divided by add-to-carts; shows checkout or closing efficiency.</div>
+            <div><strong>Conv. / Click</strong>: conversions divided by clicks; shows post-click conversion efficiency.</div>
+            <div><strong>Conv. / Impr.</strong>: conversions divided by impressions; shows full-funnel conversion rate.</div>
+            <div class="mi-axis-help-note">Colors compare segments within each column.</div>
+        </div>
+    </div>
+    """
+
+
+def _normalize_rate_matrix(matrix: pd.DataFrame) -> pd.DataFrame:
+    return matrix.apply(lambda column: column / column.max() if column.max() else column)
+
+
+def _format_axis_by_metric(fig: go.Figure, axis: str, metric: str) -> None:
+    tickformat = _axis_tickformat(metric)
+    if not tickformat:
+        return
+    if axis == "x":
+        fig.update_xaxes(tickformat=tickformat)
+    if axis == "y":
+        fig.update_yaxes(tickformat=tickformat)
+
+
+def _add_frontier_target_lines(fig: go.Figure, x_metric: str, y_metric: str, controls: DashboardControls) -> None:
+    targets = {
+        "roas": ("Target ROAS", controls.target_roas, "#059669"),
+        "cpa": ("Target CPA", controls.target_cpa, "#dc2626"),
+    }
+    for metric, (label, value, color) in targets.items():
+        if x_metric == metric:
+            fig.add_vline(x=value, line_dash="dash", line_color=color, annotation_text=label)
+        if y_metric == metric:
+            fig.add_hline(y=value, line_dash="dash", line_color=color, annotation_text=label)
+
+
+def _format_frontier_axes(fig: go.Figure, x_metric: str, y_metric: str) -> None:
+    _format_axis_by_metric(fig, "x", x_metric)
+    _format_axis_by_metric(fig, "y", y_metric)
+
+
+def _axis_tickformat(metric: str) -> str | None:
+    if metric == "cpc":
+        return "$,.2f"
+    if metric in {"spend", "revenue", "profit", "cpa"}:
+        return "$,.0f"
+    if metric in {"ctr", "cvr"}:
+        return ".2%"
+    if metric in {"conversions", "impressions", "clicks"}:
+        return ",.0f"
+    if metric in {"roas", "frequency"}:
+        return ".2f"
+    return None
 
 
 def _time_series(frame: pd.DataFrame, granularity: str, dimension: str | None = None) -> pd.DataFrame:
@@ -899,6 +1234,66 @@ def _inject_dashboard_css() -> None:
             font-size: 0.86rem;
             line-height: 1.35;
             margin-top: 0.45rem;
+        }
+        .mi-axis-help {
+            align-items: center;
+            color: #475569;
+            display: flex;
+            font-size: 0.78rem;
+            gap: 0.35rem;
+            justify-content: flex-end;
+            line-height: 1.25;
+            margin-top: -0.65rem;
+            padding-right: 0.35rem;
+            position: relative;
+        }
+        .mi-axis-help-label {
+            font-weight: 650;
+        }
+        .mi-axis-help-icon {
+            align-items: center;
+            border: 1px solid #94a3b8;
+            border-radius: 999px;
+            color: #475569;
+            cursor: help;
+            display: inline-flex;
+            font-size: 0.7rem;
+            font-weight: 750;
+            height: 1rem;
+            justify-content: center;
+            width: 1rem;
+        }
+        .mi-axis-help-tooltip {
+            background: #0f172a;
+            border-radius: 8px;
+            bottom: 1.45rem;
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.22);
+            color: #f8fafc;
+            display: none;
+            font-size: 0.78rem;
+            line-height: 1.35;
+            max-width: 28rem;
+            padding: 0.75rem 0.85rem;
+            position: absolute;
+            right: 0;
+            text-align: left;
+            width: min(28rem, calc(100vw - 2rem));
+            z-index: 20;
+        }
+        .mi-axis-help:hover .mi-axis-help-tooltip {
+            display: block;
+        }
+        .mi-axis-help-icon:hover + .mi-axis-help-tooltip {
+            display: block;
+        }
+        .mi-axis-help-tooltip div + div {
+            margin-top: 0.32rem;
+        }
+        .mi-axis-help-note {
+            border-top: 1px solid rgba(248, 250, 252, 0.22);
+            color: #cbd5e1;
+            margin-top: 0.5rem !important;
+            padding-top: 0.45rem;
         }
         </style>
         """,

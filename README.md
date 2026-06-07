@@ -76,11 +76,12 @@ The Budget Optimizer tab uses a 250k-row synthetic media-mix dataset by default,
 
 Use it to:
 
-- Set total budget, target ROAS, target CPA, risk tolerance, objective, and excluded platforms.
-- Review expected revenue, profit, conversions, CPA, and ROAS.
-- Compare recommended allocation by platform.
-- Inspect the efficiency frontier across expected CPA, expected ROAS, allocation, and platform.
-- See allocation actions such as increase or maintain based on marginal return, risk, and saturation.
+- Choose a business goal such as profitable growth, efficient acquisition, scaling winners, or waste reduction.
+- Set scenario budget, planning horizon, target ROAS, target CPA, risk tolerance, objective focus, and excluded platforms.
+- Review goal fit, primary constraint, expected revenue, profit, conversions, CPA, ROAS, budget to fund, and budget to limit.
+- Compare recommended allocation by platform against the current spend mix.
+- Inspect tradeoffs across expected CPA, expected ROAS, marginal ROAS, risk, saturation, and recommended shift.
+- Export an allocation action plan with priority, decision, business reason, and next step by platform.
 
 ### Data Sources
 

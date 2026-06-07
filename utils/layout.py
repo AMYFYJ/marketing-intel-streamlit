@@ -4,8 +4,8 @@ import streamlit as st
 
 
 def render_app_header() -> None:
-    st.title("Marketing Intelligence Dashboard")
-    st.caption("Paid media performance, competitor intelligence, demand signals, and budget planning in one Streamlit app.")
+    st.title("Marketing Intelligence Command Center")
+    st.caption("Connect paid media performance, competitor moves, demand signals, and budget decisions to growth goals.")
 
 
 def render_data_sources() -> None:
@@ -25,6 +25,7 @@ def render_data_sources() -> None:
 
         **Budget optimizer**
         - Uses a 250k-row synthetic media-mix dataset generated in memory.
+        - Turns target ROAS, target CPA, risk tolerance, and business goal into an exportable allocation action plan.
         - CSV upload and API connector stubs are included for future real campaign data.
         """
     )

@@ -22,6 +22,23 @@ from data_sources.trend_sources import parse_keywords
 
 SOURCES = ["Meta Ad Library", "TikTok Creative Center", "YouTube", "Reddit", "GDELT"]
 DEFAULT_SOURCES = ["Meta Ad Library", "TikTok Creative Center", "Reddit", "GDELT"]
+SCAN_DEPTHS = {
+    "Quick scan": {
+        "max_items": 10,
+        "sources": ("Meta Ad Library", "TikTok Creative Center", "Reddit"),
+        "description": "Fastest preview of ad-library and social signals.",
+    },
+    "Balanced scan": {
+        "max_items": 15,
+        "sources": tuple(DEFAULT_SOURCES),
+        "description": "Recommended source mix for most competitive checks.",
+    },
+    "Deep scan": {
+        "max_items": 30,
+        "sources": tuple(SOURCES),
+        "description": "Broader source coverage with more results per source.",
+    },
+}
 PLOTLY_CONFIG = {"displayModeBar": True, "modeBarButtonsToRemove": ["lasso2d"]}
 COLOR_SEQUENCE = ["#2563eb", "#059669", "#f97316", "#7c3aed", "#dc2626", "#0891b2", "#ca8a04"]
 
@@ -105,17 +122,67 @@ def render() -> None:
 
 
 def _render_command_bar() -> tuple[str, str, str, int, list[str], bool]:
-    with st.form("competitor_command_bar"):
-        st.markdown("#### Command Bar")
-        c1, c2, c3 = st.columns([1.6, 1.6, 1])
-        raw_competitors = c1.text_area("Competitors", value="HubSpot, Salesforce, Klaviyo", height=92)
-        raw_keywords = c2.text_area("Keywords or themes", value="AI marketing, customer data, automation", height=92)
-        country = c3.selectbox("Market", ["US", "GB", "CA", "AU", "DE", "FR"], index=0)
-        max_items = c3.slider("Items/source", min_value=5, max_value=50, value=15, step=5)
+    with st.container(border=True):
+        st.markdown("#### Monitor Setup")
+        c1, c2 = st.columns(2)
+        raw_competitors = c1.text_area(
+            "Competitors",
+            value="HubSpot, Salesforce, Klaviyo",
+            height=92,
+            help="Enter competitor brands separated by commas or line breaks.",
+        )
+        raw_keywords = c2.text_area(
+            "Themes to monitor",
+            value="AI marketing, customer data, automation",
+            height=92,
+            help="Add messages, offers, product areas, or customer pains to combine with each competitor.",
+        )
 
-        s1, s2 = st.columns([3, 1])
-        sources = s1.multiselect("Sources", SOURCES, default=DEFAULT_SOURCES)
-        submitted = s2.form_submit_button("Refresh intelligence", type="primary", width="stretch")
+        c3, c4 = st.columns([1, 1.4])
+        country = c3.selectbox(
+            "Market",
+            ["US", "GB", "CA", "AU", "DE", "FR"],
+            index=0,
+            help="Limits market-specific sources, such as Meta Ad Library country targeting, when available.",
+        )
+        scan_depth = c4.selectbox(
+            "Scan depth",
+            list(SCAN_DEPTHS),
+            index=1,
+            help="Controls source coverage and result volume without making you tune each source manually.",
+        )
+        profile = SCAN_DEPTHS[scan_depth]
+        c4.caption(str(profile["description"]))
+
+        sources = list(profile["sources"])
+        max_items = int(profile["max_items"])
+        with st.expander("Advanced source controls", expanded=False):
+            source_mode = st.radio(
+                "Source selection",
+                ["Use scan-depth sources", "Choose sources"],
+                horizontal=True,
+                help="Use the preset source mix, or override it when a source is missing credentials or is not useful for this search.",
+            )
+            if source_mode == "Choose sources":
+                sources = st.multiselect(
+                    "Sources",
+                    SOURCES,
+                    default=sources,
+                    help="Pick the public and optional API-backed sources to query.",
+                )
+                if not sources:
+                    st.info("Select at least one source, or switch back to the scan-depth preset.")
+            max_items = st.slider(
+                "Items per source",
+                min_value=5,
+                max_value=50,
+                value=max_items,
+                step=5,
+                help="Caps how many signals each source can return for each competitor-theme pair.",
+            )
+
+        submitted = st.button("Refresh intelligence", type="primary", width="stretch")
+        sources = sources or list(profile["sources"])
     return raw_competitors, raw_keywords, country, int(max_items), sources, bool(submitted)
 
 
