@@ -28,6 +28,19 @@ THEME_TERMS = {
     "Education": ("guide", "webinar", "learn", "tips"),
 }
 
+CREATIVE_ANGLE_PATTERNS = {
+    "Before / After": ("before and after", "before/after", "transformation", "results after"),
+    "Routine": ("routine", "regimen", "daily", "morning", "nightly", "step-by-step"),
+    "Problem / Solution": ("problem", "solution", "save time", "reduce costs", "struggle", "pain point"),
+    "Ingredient Claim": ("ingredient", "formula", "clinically", "spf", "retinol", "hyaluronic", "ceramide"),
+    "Expert Proof": ("expert", "dermatologist", "doctor", "recommended", "certified", "study"),
+    "UGC / Testimonial": ("testimonial", "review", "creator", "influencer", "ugc", "real customer", "customers love"),
+    "Comparison": (" vs ", "versus", "compare", "alternative", "better than", "switch from"),
+    "New Arrival": ("new", "launch", "introducing", "new arrival", "just dropped"),
+    "Price / Promo": ("discount", "sale", "offer", "limited time", "bundle", "free shipping", "gift with purchase"),
+    "Demo / How-To": ("demo", "how to", "tutorial", "walkthrough", "learn how", "guide"),
+}
+
 SOURCE_CONFIDENCE = {
     "ok": 1.0,
     "live link": 0.62,
@@ -35,6 +48,7 @@ SOURCE_CONFIDENCE = {
     "not configured": 0.25,
     "failed": 0.15,
 }
+MARKET_WIDE_COMPETITOR = "Market-wide"
 
 
 @dataclass(frozen=True)
@@ -51,7 +65,7 @@ def parse_competitors(raw: str) -> tuple[str, ...]:
 
 def fetch_competitor_intelligence(
     query: CompetitorQuery,
-    sources: tuple[str, ...] = ("Meta Ad Library", "TikTok Creative Center", "Reddit", "GDELT"),
+    sources: tuple[str, ...] = ("Meta Ad Library", "TikTok Creative Center", "LinkedIn Ad Library", "Reddit", "GDELT"),
     meta_access_token: str | None = None,
     meta_api_version: str = "v21.0",
     youtube_api_key: str | None = None,
@@ -74,6 +88,14 @@ def fetch_competitor_intelligence(
             statuses.append(status)
         if "TikTok Creative Center" in sources:
             frame, status = fetch_tiktok_creative_center_link(term, competitor)
+            frames.append(frame)
+            statuses.append(status)
+        if "LinkedIn Ad Library" in sources:
+            frame, status = fetch_linkedin_ad_library_link(term, competitor)
+            frames.append(frame)
+            statuses.append(status)
+        if "X Ads Repository (EU Only)" in sources:
+            frame, status = fetch_x_ads_repository_link(term, competitor)
             frames.append(frame)
             statuses.append(status)
         if "YouTube" in sources:
@@ -176,6 +198,58 @@ def fetch_tiktok_creative_center_link(search_term: str, competitor: str) -> tupl
     return frame, _status("TikTok Creative Center", search_term, "live link", url)
 
 
+def fetch_linkedin_ad_library_link(search_term: str, competitor: str) -> tuple[pd.DataFrame, dict[str, str]]:
+    url = f"https://www.linkedin.com/ads/library/?keyword={quote_plus(search_term)}"
+    frame = pd.DataFrame(
+        [
+            {
+                "source": "LinkedIn Ad Library",
+                "competitor": competitor,
+                "keyword": search_term,
+                "asset_type": "Live search link",
+                "title": f"Open LinkedIn Ad Library for {search_term}",
+                "text": (
+                    "LinkedIn Ad Library is a public ad transparency database. "
+                    "This link opens the library so you can search by advertiser, keyword, country, or date range."
+                ),
+                "url": url,
+                "published_at": pd.Timestamp.now(tz="UTC"),
+                "author": "LinkedIn Ad Library",
+                "platforms": "LinkedIn",
+                "engagement": 0.0,
+            }
+        ],
+        columns=empty_competitor_frame().columns,
+    )
+    return frame, _status("LinkedIn Ad Library", search_term, "live link", url)
+
+
+def fetch_x_ads_repository_link(search_term: str, competitor: str) -> tuple[pd.DataFrame, dict[str, str]]:
+    url = "https://ads.twitter.com/ads-repository"
+    frame = pd.DataFrame(
+        [
+            {
+                "source": "X Ads Repository (EU Only)",
+                "competitor": competitor,
+                "keyword": search_term,
+                "asset_type": "Live search link",
+                "title": f"Open X Ads Repository for {search_term}",
+                "text": (
+                    "X Ads Repository is the EU Digital Services Act transparency repository. "
+                    "Use it for EU-served ads by account, country, and date range; it is not a broad global competitor ad library."
+                ),
+                "url": url,
+                "published_at": pd.Timestamp.now(tz="UTC"),
+                "author": "X Ads Repository",
+                "platforms": "X",
+                "engagement": 0.0,
+            }
+        ],
+        columns=empty_competitor_frame().columns,
+    )
+    return frame, _status("X Ads Repository (EU Only)", search_term, "live link", url)
+
+
 def compute_share_of_voice(items: pd.DataFrame) -> pd.DataFrame:
     if items.empty:
         return pd.DataFrame(columns=["competitor", "source", "items", "share_of_voice"])
@@ -209,6 +283,8 @@ def enrich_competitor_items(items: pd.DataFrame, statuses: pd.DataFrame, now: pd
         "source_confidence",
         "source_confidence_label",
         "signal_strength",
+        "creative_format",
+        "campaign_type",
         "creative_angle",
         "priority",
         "recommended_action",
@@ -233,6 +309,8 @@ def enrich_competitor_items(items: pd.DataFrame, statuses: pd.DataFrame, now: pd
     df["source_confidence"] = _source_confidence(df, statuses)
     df["source_confidence_label"] = df["source_confidence"].map(_confidence_label)
     df["signal_strength"] = _signal_strength(df)
+    df["creative_format"] = df.apply(_creative_format, axis=1)
+    df["campaign_type"] = df.apply(_campaign_type, axis=1)
     df["creative_angle"] = df.apply(_creative_angle, axis=1)
     df["priority"] = df.apply(_priority, axis=1)
     df["recommended_action"] = df.apply(_recommended_action, axis=1)
@@ -351,6 +429,8 @@ def empty_competitor_frame() -> pd.DataFrame:
 def _search_terms(query: CompetitorQuery) -> list[tuple[str, str]]:
     terms: list[tuple[str, str]] = []
     keywords = query.keywords or ("",)
+    if not query.competitors:
+        return [(MARKET_WIDE_COMPETITOR, keyword) for keyword in keywords if keyword]
     for competitor in query.competitors:
         for keyword in keywords:
             search_term = f"{competitor} {keyword}".strip()
@@ -440,7 +520,67 @@ def _percentile(series: pd.Series) -> pd.Series:
     return series.rank(pct=True).fillna(0.5)
 
 
+def _creative_format(row: pd.Series) -> str:
+    source = str(row.get("source", "")).lower()
+    asset_type = str(row.get("asset_type", "")).lower()
+    platforms = str(row.get("platforms", "")).lower()
+    text = f"{row.get('title', '')} {row.get('text', '')}".lower()
+    if "youtube" in source or "youtube" in platforms:
+        return "Video"
+    if "tiktok" in source or "tiktok" in platforms:
+        return "Video"
+    if "linkedin" in source or "linkedin" in platforms:
+        return "Ad Library Link"
+    if "x ads repository" in source or platforms == "x":
+        return "Ad Repository Link"
+    if "reddit" in source:
+        return "Social Post"
+    if "gdelt" in source:
+        return "News Article"
+    if "carousel" in text:
+        return "Carousel"
+    if "video" in text or "watch" in text:
+        return "Video"
+    if any(term in text for term in ("static", "image", "photo", "graphic")):
+        return "Static Image"
+    if "ad" in asset_type:
+        return "Ad Format Unknown"
+    if "live search link" in asset_type:
+        return "Live Search Link"
+    return str(row.get("asset_type", "") or "Unknown")
+
+
+def _campaign_type(row: pd.Series) -> str:
+    source = str(row.get("source", "")).lower()
+    cta = str(row.get("cta", "No explicit CTA"))
+    theme = str(row.get("theme", "General"))
+    text = f"{row.get('title', '')} {row.get('text', '')}".lower()
+    if any(term in text for term in ("holiday", "seasonal", "back to school", "black friday", "cyber monday")):
+        return "Seasonal"
+    if any(term in text for term in ("creator", "influencer", "ugc", "testimonial", "review")):
+        return "Influencer / Creator"
+    if cta == "Shop now" or theme == "Discount" or any(term in text for term in ("discount", "sale", "bundle", "free shipping", "limited time")):
+        return "Discount / Promo"
+    if theme == "Launch" or any(term in text for term in ("new arrival", "just dropped", "introducing")):
+        return "Product Launch"
+    if cta in {"Book demo", "Free trial", "Sign up"}:
+        return "Lead Gen"
+    if cta in {"Download", "Learn more"} or theme == "Education":
+        return "Educational"
+    if theme == "Trust" or any(term in text for term in ("proof", "trusted", "secure", "case study")):
+        return "Social Proof / Trust"
+    if theme in {"AI", "Efficiency"}:
+        return "Product Feature"
+    if "reddit" in source or "gdelt" in source:
+        return "Organic / PR"
+    return "Brand Awareness"
+
+
 def _creative_angle(row: pd.Series) -> str:
+    text = f"{row.get('title', '')} {row.get('text', '')}".lower()
+    for label, patterns in CREATIVE_ANGLE_PATTERNS.items():
+        if any(pattern in text for pattern in patterns):
+            return label
     theme = str(row.get("theme", "General"))
     cta = str(row.get("cta", "No explicit CTA"))
     if cta == "No explicit CTA":

@@ -42,14 +42,14 @@ Use it to:
 
 ### Competitor Intelligence
 
-The Competitor Intelligence tab monitors observed competitor creative and messaging signals across Meta Ad Library, TikTok Creative Center, YouTube, Reddit, and GDELT/news.
+The Competitor Intelligence tab monitors observed ad creative and messaging signals across Meta Ad Library, TikTok Creative Center, LinkedIn Ad Library, the EU-only X Ads Repository, YouTube, Reddit, and GDELT/news.
 
 Use it to:
 
-- Enter competitors, themes, market, sources, and item limits from a compact command bar.
+- Choose ad content categories, optional competitor filters, public sources, and item volume, then click `Run Live Analysis`.
 - Review source health so missing API keys or live-link-only sources are easy to understand.
-- See signal summary cards for share-of-voice leader, top theme, top CTA, newest signal, and test-next ideas.
-- Decode creative patterns by theme, CTA, sentiment, freshness, source confidence, and signal strength.
+- See signal summary cards for share-of-voice leader, top message, top CTA, newest signal, and test-next ideas.
+- Decode creative patterns by message pattern, CTA, sentiment, freshness, source confidence, and signal strength.
 - Turn public signals into an action board of `Test next`, `Open source`, `Watch`, `Archive`, or `Fix source`.
 - Export creative test briefs for planning and team handoff.
 
@@ -92,7 +92,7 @@ Use it to:
 - Confirm supported campaign CSV names.
 - See which public/no-key sources are available.
 - Understand which secrets unlock optional APIs.
-- Review limitations such as Meta API access, TikTok Creative Center live links, GDELT rate limits, and synthetic optimizer data.
+- Review limitations such as Meta API access, TikTok/LinkedIn live links, X EU-only coverage, GDELT rate limits, and synthetic optimizer data.
 
 ## Data Sources
 
@@ -118,6 +118,9 @@ If no CSV is present, the app uses a deterministic fallback campaign sample with
 - YouTube Data API when `YOUTUBE_API_KEY` is configured.
 - Meta Ad Library API when `META_ACCESS_TOKEN` is configured, plus public Ad Library search links when it is not.
 - TikTok Creative Center live links: https://ads.tiktok.com/business/creativecenter/
+- LinkedIn Ad Library live links for public advertiser, keyword, country, and date-range research: https://www.linkedin.com/ads/library/
+- X Ads Repository live link for EU Digital Services Act ad transparency research: https://ads.twitter.com/ads-repository
+- Amazon is not listed as a normal competitor source because Amazon Ads API access is for advertiser/partner campaign management and reporting, not a public competitor ad library.
 - Optional `data/google_trends_export.csv` and `data/pinterest_trends_export.csv` files for trend-export workflows.
 
 ## Local Setup
@@ -160,6 +163,8 @@ The app runs without these secrets. YouTube and Meta API calls show `not configu
 
 - Meta Ad Library API access is optional and separate from private Meta campaign API access.
 - TikTok Creative Center does not expose a stable public API in this implementation, so the app provides live deep links rather than scraping.
+- LinkedIn Ad Library is supported as a live-link source; deeper API access requires LinkedIn approval.
+- X Ads Repository coverage is EU/DSA-specific and should not be read as a global X competitor ad scan.
 - GDELT rate-limits frequent calls; the app surfaces `rate limited` status and uses Streamlit caching.
 - Public competitor and demand sources are directional signals, not verified media performance metrics.
 - The synthetic optimizer dataset is generated in memory and is not committed to the repo.

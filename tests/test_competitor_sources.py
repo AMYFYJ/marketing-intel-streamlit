@@ -4,6 +4,7 @@ import pandas as pd
 
 from data_sources.competitor_sources import (
     CompetitorQuery,
+    MARKET_WIDE_COMPETITOR,
     analyze_creative_patterns,
     build_strategy_recommendations,
     build_theme_cta_matrix,
@@ -13,8 +14,10 @@ from data_sources.competitor_sources import (
     enrich_competitor_items,
     empty_competitor_frame,
     fetch_competitor_intelligence,
+    fetch_linkedin_ad_library_link,
     fetch_meta_ad_library,
     fetch_tiktok_creative_center_link,
+    fetch_x_ads_repository_link,
     parse_competitors,
     summarize_competitive_signals,
 )
@@ -74,6 +77,26 @@ def test_tiktok_creative_center_returns_live_link_item() -> None:
     assert "creativecenter" in frame.loc[0, "url"]
 
 
+def test_linkedin_ad_library_returns_live_link_item() -> None:
+    frame, status = fetch_linkedin_ad_library_link("Acme AI", "Acme")
+
+    assert status["status"] == "live link"
+    assert len(frame) == 1
+    assert frame.loc[0, "source"] == "LinkedIn Ad Library"
+    assert "linkedin.com/ads/library" in frame.loc[0, "url"]
+    assert frame.loc[0, "platforms"] == "LinkedIn"
+
+
+def test_x_ads_repository_returns_eu_only_live_link_item() -> None:
+    frame, status = fetch_x_ads_repository_link("Acme AI", "Acme")
+
+    assert status["status"] == "live link"
+    assert len(frame) == 1
+    assert frame.loc[0, "source"] == "X Ads Repository (EU Only)"
+    assert "ads.twitter.com/ads-repository" in frame.loc[0, "url"]
+    assert "EU Digital Services Act" in frame.loc[0, "text"]
+
+
 def test_detect_cta_and_theme() -> None:
     text = "Start free trial for AI workflow automation"
 
@@ -99,12 +122,29 @@ def test_share_of_voice_and_creative_patterns() -> None:
 def test_fetch_competitor_intelligence_combines_link_sources() -> None:
     items, statuses = fetch_competitor_intelligence(
         CompetitorQuery(competitors=("Acme",), keywords=("AI",), max_items_per_source=5),
-        sources=("Meta Ad Library", "TikTok Creative Center"),
+        sources=("Meta Ad Library", "TikTok Creative Center", "LinkedIn Ad Library", "X Ads Repository (EU Only)"),
+    )
+
+    assert len(items) == 3
+    assert set(statuses["source"]) == {
+        "Meta Ad Library",
+        "TikTok Creative Center",
+        "LinkedIn Ad Library",
+        "X Ads Repository (EU Only)",
+    }
+    assert items.loc[0, "competitor"] == "Acme"
+
+
+def test_fetch_competitor_intelligence_supports_market_wide_theme_scan() -> None:
+    items, statuses = fetch_competitor_intelligence(
+        CompetitorQuery(competitors=(), keywords=("beauty",), max_items_per_source=5),
+        sources=("TikTok Creative Center",),
     )
 
     assert len(items) == 1
-    assert set(statuses["source"]) == {"Meta Ad Library", "TikTok Creative Center"}
-    assert items.loc[0, "competitor"] == "Acme"
+    assert items.loc[0, "competitor"] == MARKET_WIDE_COMPETITOR
+    assert items.loc[0, "keyword"] == "beauty"
+    assert statuses.loc[0, "keyword"] == "beauty"
 
 
 def test_fetch_competitor_intelligence_handles_all_empty_sources() -> None:
@@ -143,7 +183,9 @@ def test_enrich_competitor_items_adds_decision_fields() -> None:
     enriched = enrich_competitor_items(items, statuses, now=pd.Timestamp("2026-02-01T00:00:00Z"))
 
     assert enriched.loc[0, "source_confidence_label"] == "Direct source"
-    assert enriched.loc[0, "creative_angle"] == "AI + Free trial"
+    assert enriched.loc[0, "creative_format"] == "Ad Format Unknown"
+    assert enriched.loc[0, "campaign_type"] == "Lead Gen"
+    assert enriched.loc[0, "creative_angle"] == "Problem / Solution"
     assert enriched.loc[0, "priority"] == "High"
     assert enriched.loc[0, "recommended_action"] == "Test next"
     assert enriched.loc[0, "freshness_days"] == 7

@@ -18,6 +18,116 @@ def test_app_modules_import() -> None:
         assert importlib.import_module(module)
 
 
+def test_competitor_dropdown_options_include_defaults() -> None:
+    competitor_intelligence = importlib.import_module("features.competitor_intelligence")
+
+    assert set(competitor_intelligence.DEFAULT_COMPETITORS).issubset(competitor_intelligence.COMPETITOR_OPTIONS)
+    assert len(competitor_intelligence.COMPETITOR_OPTIONS) == len(set(competitor_intelligence.COMPETITOR_OPTIONS))
+
+
+def test_watch_dropdown_options_are_clean_fetch_keywords() -> None:
+    competitor_intelligence = importlib.import_module("features.competitor_intelligence")
+    all_theme_keywords = {
+        theme
+        for themes in competitor_intelligence.THEME_OPTIONS_BY_CATEGORY.values()
+        for theme in themes
+    }
+    default_keywords = competitor_intelligence._theme_keywords_from_options(
+        competitor_intelligence.DEFAULT_THEME_OPTIONS
+    )
+
+    assert set(competitor_intelligence.DEFAULT_THEMES).issubset(all_theme_keywords)
+    assert "beauty" in all_theme_keywords
+    assert len(competitor_intelligence.THEME_OPTIONS) == len(set(competitor_intelligence.THEME_OPTIONS))
+    assert set(default_keywords) == set(competitor_intelligence.DEFAULT_THEMES)
+    assert all(competitor_intelligence.THEME_LABEL_SEPARATOR not in keyword for keyword in default_keywords)
+
+
+def test_content_category_dropdown_uses_clean_theme_labels() -> None:
+    competitor_intelligence = importlib.import_module("features.competitor_intelligence")
+
+    assert competitor_intelligence.THEME_OPTIONS[:3] == (
+        "Beauty & Personal Care: beauty",
+        "Beauty & Personal Care: skincare",
+        "Beauty & Personal Care: makeup",
+    )
+    assert competitor_intelligence._theme_keyword_from_option("Beauty & Personal Care: beauty") == "beauty"
+    assert competitor_intelligence._theme_keyword_from_option("beauty") == "beauty"
+    assert competitor_intelligence._theme_display_label("Beauty & Personal Care: beauty") == "Beauty"
+    assert competitor_intelligence._theme_display_label("Beauty & Personal Care: hair care") == "Hair Care"
+    assert competitor_intelligence._theme_display_label("AI & Automation: AI marketing") == "AI Marketing"
+    assert competitor_intelligence._theme_display_label("Ads & Media: connected TV") == "Connected TV"
+    assert competitor_intelligence._theme_display_label("Commerce & Vertical Plays: SaaS marketing") == "SaaS Marketing"
+    assert competitor_intelligence._theme_display_label("Audience Pains: prove ROI") == "Prove ROI"
+    assert competitor_intelligence._theme_display_label("Measurement & Analytics: A/B testing") == "A/B Testing"
+
+
+def test_source_selector_options_include_default_sources() -> None:
+    competitor_intelligence = importlib.import_module("features.competitor_intelligence")
+
+    assert set(competitor_intelligence.DEFAULT_SOURCES).issubset(competitor_intelligence.SOURCES)
+    assert len(competitor_intelligence.SOURCES) == len(set(competitor_intelligence.SOURCES))
+    assert "LinkedIn Ad Library" in competitor_intelligence.SOURCES
+    assert "X Ads Repository (EU Only)" in competitor_intelligence.SOURCES
+    assert not any("Amazon" in source for source in competitor_intelligence.SOURCES)
+    assert competitor_intelligence.DEFAULT_MAX_ITEMS_PER_SOURCE == 15
+
+
+def test_platform_strategy_summary_shapes_competitor_rows() -> None:
+    competitor_intelligence = importlib.import_module("features.competitor_intelligence")
+    frame = pd.DataFrame(
+        [
+            {
+                "competitor": "Acme",
+                "source": "TikTok Creative Center",
+                "creative_format": "Video",
+                "cta": "Shop now",
+                "campaign_type": "Discount / Promo",
+                "title": "Limited time bundle",
+                "published_at": pd.Timestamp("2026-02-01T00:00:00Z"),
+                "signal_strength": 80.0,
+            }
+        ]
+    )
+
+    summary = competitor_intelligence._platform_strategy_summary(frame)
+
+    assert summary.loc[0, "Competitor"] == "Acme"
+    assert summary.loc[0, "Top Format"] == "Video"
+    assert summary.loc[0, "Top Campaign Type"] == "Discount / Promo"
+    assert "Shop now" in summary.loc[0, "Suggested Test"]
+
+
+def test_live_result_signature_tracks_current_setup() -> None:
+    competitor_intelligence = importlib.import_module("features.competitor_intelligence")
+
+    base = competitor_intelligence._query_signature((), ("beauty",), "US", 15, ("Reddit", "GDELT"))
+    changed_sources = competitor_intelligence._query_signature((), ("beauty",), "US", 15, ("GDELT",))
+    changed_categories = competitor_intelligence._query_signature((), ("skincare",), "US", 15, ("Reddit", "GDELT"))
+
+    assert base == ((), ("beauty",), "US", 15, ("Reddit", "GDELT"))
+    assert base != changed_sources
+    assert base != changed_categories
+
+
+def test_signal_summary_help_covers_cards() -> None:
+    competitor_intelligence = importlib.import_module("features.competitor_intelligence")
+    expected_cards = {
+        "Observed signals",
+        "Active sources",
+        "Scan scope",
+        "Share leader",
+        "Top message",
+        "Top CTA",
+        "Newest signal",
+        "Test-next ideas",
+        "Avg strength",
+    }
+
+    assert set(competitor_intelligence.SIGNAL_SUMMARY_HELP) == expected_cards
+    assert all(competitor_intelligence.SIGNAL_SUMMARY_HELP.values())
+
+
 def test_frontier_cpc_axis_keeps_cents() -> None:
     performance_dashboard = importlib.import_module("features.performance_dashboard")
 
