@@ -59,7 +59,7 @@ class CampaignFilters:
     budget_tiers: tuple[str, ...] = ()
 
 
-def load_campaign_data(data_dir: str | Path = "data", fallback_rows: int = 10_000) -> pd.DataFrame:
+def load_campaign_data(data_dir: str | Path = "data", fallback_rows: int = 30_000) -> pd.DataFrame:
     """Load the preferred public campaign dataset or a deterministic fallback sample."""
     data_path = _find_source_file(Path(data_dir))
     if data_path:
@@ -147,83 +147,126 @@ def _snake(value: str) -> str:
     )
 
 
+PLATFORM_CTR = {"Meta": 0.011, "Google": 0.037, "TikTok": 0.014, "LinkedIn": 0.008, "YouTube": 0.010, "Pinterest": 0.012, "Snapchat": 0.013, "Reddit": 0.009}
+PLATFORM_CPM = {"Meta": 12, "Google": 18, "TikTok": 9, "LinkedIn": 34, "YouTube": 14, "Pinterest": 10, "Snapchat": 8, "Reddit": 11}
+# Calibrated so blended ROAS lands near 3x with believable platform ordering.
+PLATFORM_TARGET_ROAS = {"Meta": 3.2, "Google": 4.2, "TikTok": 2.8, "LinkedIn": 1.4, "YouTube": 2.2, "Pinterest": 2.6, "Snapchat": 2.3, "Reddit": 2.0}
+# Campaign-level ROAS dispersion per platform; differentiates optimizer risk indices.
+PLATFORM_ROAS_VOLATILITY = {"Meta": 0.35, "Google": 0.22, "TikTok": 0.55, "LinkedIn": 0.30, "YouTube": 0.40, "Pinterest": 0.45, "Snapchat": 0.60, "Reddit": 0.50}
+OBJECTIVE_CVR = {"Awareness": 0.004, "Traffic": 0.008, "Lead Gen": 0.025, "Sales": 0.018, "App Install": 0.015, "Retargeting": 0.035}
+# Spend-weighted mean of these factors is ~1.0 so platform ROAS targets hold.
+OBJECTIVE_ROAS_FACTOR = {"Awareness": 0.55, "Traffic": 0.80, "Lead Gen": 1.00, "Sales": 1.25, "App Install": 0.90, "Retargeting": 1.55}
+TIER_DAILY_SPEND = {"Test": 35, "Growth": 140, "Scale": 450, "Enterprise": 1400}
+WEEKDAY_SPEND_FACTOR = np.array([1.05, 1.06, 1.07, 1.06, 1.02, 0.88, 0.86])
+
+SAMPLE_DATE_RANGE = (pd.Timestamp("2024-01-01"), pd.Timestamp("2026-01-31"))
+CAMPAIGN_LIFESPAN_DAYS = (21, 240)
+
+
 def generate_campaign_sample(rows: int = 10_000, seed: int = 42) -> pd.DataFrame:
+    """Generate persistent campaigns with one row per campaign per active day.
+
+    Campaigns keep fixed attributes over a 30-400 day lifespan; daily rows add
+    weekday/seasonality/noise dynamics plus per-campaign performance drift, so
+    period comparisons and campaign-level trends are meaningful.
+    """
+    if rows <= 0:
+        raise ValueError("rows must be positive")
     rng = np.random.default_rng(seed)
-    dates = pd.date_range("2024-01-01", "2026-01-31", freq="D")
+    start_date, end_date = SAMPLE_DATE_RANGE
+    total_days = (end_date - start_date).days + 1
 
-    platform = rng.choice(PLATFORMS, size=rows, p=[0.26, 0.23, 0.16, 0.09, 0.10, 0.06, 0.05, 0.05])
-    objective = rng.choice(OBJECTIVES, size=rows, p=[0.16, 0.20, 0.18, 0.25, 0.08, 0.13])
-    industry = rng.choice(INDUSTRIES, size=rows)
-    audience = rng.choice(AUDIENCES, size=rows, p=[0.30, 0.18, 0.20, 0.12, 0.12, 0.08])
-    device = rng.choice(DEVICES, size=rows, p=[0.68, 0.27, 0.05])
-    creative = rng.choice(CREATIVES, size=rows, p=[0.24, 0.24, 0.15, 0.08, 0.20, 0.09])
-    placement = rng.choice(PLACEMENTS, size=rows)
-    budget_tier = rng.choice(BUDGET_TIERS, size=rows, p=[0.42, 0.34, 0.19, 0.05])
+    # Spawn campaigns until cumulative campaign-days cover the requested rows,
+    # then trim the last lifespan so len(frame) == rows exactly.
+    min_life, max_life = CAMPAIGN_LIFESPAN_DAYS
+    n_estimate = max(rows // ((min_life + max_life) // 2) + 8, 4)
+    lifespans = rng.integers(min_life, max_life + 1, size=n_estimate)
+    while int(lifespans.sum()) < rows:
+        lifespans = np.concatenate([lifespans, rng.integers(min_life, max_life + 1, size=n_estimate)])
+    cutoff = int(np.searchsorted(np.cumsum(lifespans), rows)) + 1
+    lifespans = lifespans[:cutoff].copy()
+    lifespans[-1] -= int(lifespans.sum()) - rows
+    n = len(lifespans)
 
-    platform_ctr = {"Meta": 0.011, "Google": 0.037, "TikTok": 0.014, "LinkedIn": 0.008, "YouTube": 0.010, "Pinterest": 0.012, "Snapchat": 0.013, "Reddit": 0.009}
-    objective_cvr = {"Awareness": 0.012, "Traffic": 0.025, "Lead Gen": 0.055, "Sales": 0.042, "App Install": 0.038, "Retargeting": 0.082}
-    platform_cpm = {"Meta": 12, "Google": 18, "TikTok": 9, "LinkedIn": 34, "YouTube": 14, "Pinterest": 10, "Snapchat": 8, "Reddit": 11}
-    tier_spend = {"Test": 450, "Growth": 1800, "Scale": 5800, "Enterprise": 17000}
+    platform = rng.choice(PLATFORMS, size=n, p=[0.26, 0.23, 0.16, 0.09, 0.10, 0.06, 0.05, 0.05])
+    objective = rng.choice(OBJECTIVES, size=n, p=[0.16, 0.20, 0.18, 0.25, 0.08, 0.13])
+    industry = rng.choice(INDUSTRIES, size=n)
+    audience = rng.choice(AUDIENCES, size=n, p=[0.30, 0.18, 0.20, 0.12, 0.12, 0.08])
+    device = rng.choice(DEVICES, size=n, p=[0.68, 0.27, 0.05])
+    creative = rng.choice(CREATIVES, size=n, p=[0.24, 0.24, 0.15, 0.08, 0.20, 0.09])
+    placement = rng.choice(PLACEMENTS, size=n)
+    geo = rng.choice(GEOS, size=n)
+    budget_tier = rng.choice(BUDGET_TIERS, size=n, p=[0.42, 0.34, 0.19, 0.05])
+    start_day = rng.integers(0, np.maximum(total_days - lifespans, 1))
 
-    base_spend = np.array([tier_spend[tier] for tier in budget_tier], dtype=float)
-    spend = rng.lognormal(mean=np.log(base_spend), sigma=0.45).clip(80, 90_000).round(2)
-    cpm = np.array([platform_cpm[item] for item in platform], dtype=float) * rng.lognormal(0, 0.18, rows)
-    impressions = np.maximum((spend / cpm * 1000).astype(int), 500)
-
-    ctr_base = np.array([platform_ctr[item] for item in platform], dtype=float)
+    # Campaign-level baselines (mean-corrected lognormal noise keeps platform averages on target).
     ctr_mod = np.where(creative == "Text Search", 1.8, np.where(creative == "Video", 1.12, 1.0))
-    ctr = np.clip(ctr_base * ctr_mod * rng.lognormal(0, 0.30, rows), 0.001, 0.18)
-    clicks = np.minimum(rng.binomial(impressions, ctr), impressions)
-
-    cvr_base = np.array([objective_cvr[item] for item in objective], dtype=float)
+    ctr_campaign = np.array([PLATFORM_CTR[p] for p in platform]) * ctr_mod * rng.lognormal(-0.02, 0.20, n)
     cvr_mod = np.where(audience == "Retargeting", 1.65, np.where(audience == "High Intent", 1.32, 1.0))
-    cvr = np.clip(cvr_base * cvr_mod * rng.lognormal(0, 0.28, rows), 0.001, 0.35)
-    conversions = np.minimum(rng.binomial(np.maximum(clicks, 1), cvr), clicks)
+    cvr_campaign = np.array([OBJECTIVE_CVR[o] for o in objective]) * cvr_mod * rng.lognormal(-0.02, 0.20, n)
+    cpm_campaign = np.array([PLATFORM_CPM[p] for p in platform], dtype=float) * rng.lognormal(0, 0.15, n)
+    base_daily_spend = np.array([TIER_DAILY_SPEND[t] for t in budget_tier], dtype=float) * rng.lognormal(0, 0.35, n)
 
-    aov_by_industry = {
-        "Retail": 72,
-        "SaaS": 310,
-        "Beauty": 56,
-        "Finance": 420,
-        "Travel": 260,
-        "Healthcare": 180,
-        "Education": 140,
-        "Gaming": 38,
-    }
-    aov = np.array([aov_by_industry[item] for item in industry], dtype=float) * rng.lognormal(0, 0.33, rows)
-    revenue = (conversions * aov * rng.uniform(0.82, 1.18, rows)).round(2)
+    volatility = np.array([PLATFORM_ROAS_VOLATILITY[p] for p in platform])
+    performance_mult = rng.lognormal(-(volatility**2) / 2, volatility)
+    roas_campaign = np.array([PLATFORM_TARGET_ROAS[p] for p in platform]) * np.array([OBJECTIVE_ROAS_FACTOR[o] for o in objective]) * performance_mult
+    expected_cpa_campaign = cpm_campaign / (1000 * ctr_campaign * cvr_campaign)
+    aov_campaign = roas_campaign * expected_cpa_campaign
+    monthly_drift = rng.normal(0, 0.04, n).clip(-0.10, 0.10)
+    quality_score = rng.normal(6.8, 1.2, n).clip(1, 10).round(1)
+
+    # Expand to campaign-day rows.
+    camp = np.repeat(np.arange(n), lifespans)
+    day_offset = np.arange(rows) - np.repeat(np.cumsum(lifespans) - lifespans, lifespans)
+    date = start_date + pd.to_timedelta(start_day[camp] + day_offset, unit="D")
+    month = date.month.to_numpy()
+    seasonality = 1 + 0.18 * np.sin((month - 1) / 12 * 2 * np.pi)
+    weekday_factor = WEEKDAY_SPEND_FACTOR[date.weekday.to_numpy()]
+
+    spend = (base_daily_spend[camp] * weekday_factor * seasonality * rng.lognormal(0, 0.22, rows)).clip(10, 25_000).round(2)
+    cpm_day = cpm_campaign[camp] * rng.lognormal(0, 0.06, rows)
+    impressions = np.maximum((spend / cpm_day * 1000).astype(int), 200)
+
+    ctr_day = np.clip(ctr_campaign[camp] * rng.lognormal(0, 0.08, rows), 0.0008, 0.15)
+    clicks = np.minimum(rng.binomial(impressions, ctr_day), impressions)
+
+    drift_mult = np.clip((1 + monthly_drift[camp]) ** (day_offset / 30), 0.5, 2.0)
+    cvr_day = np.clip(cvr_campaign[camp] * drift_mult * rng.lognormal(0, 0.08, rows), 0.0005, 0.30)
+    conversions = np.minimum(rng.binomial(np.maximum(clicks, 1), cvr_day), clicks)
+
+    revenue = (conversions * aov_campaign[camp] * rng.lognormal(0, 0.10, rows)).round(2)
 
     reach = np.maximum((impressions / rng.uniform(1.2, 4.5, rows)).astype(int), 1)
-    video_views = np.where(np.isin(creative, ["Video", "Short-form Video"]), (impressions * rng.uniform(0.16, 0.62, rows)).astype(int), 0)
+    video_views = np.where(np.isin(creative[camp], ["Video", "Short-form Video"]), (impressions * rng.uniform(0.16, 0.62, rows)).astype(int), 0)
     add_to_cart = np.minimum((conversions * rng.uniform(1.2, 3.5, rows)).astype(int), clicks)
     landing_page_view = np.minimum((clicks * rng.uniform(0.62, 0.96, rows)).astype(int), clicks)
 
     frame = pd.DataFrame(
         {
-            "date": rng.choice(dates, size=rows),
-            "campaign_id": [f"CMP-{idx + 1:06d}" for idx in range(rows)],
-            "campaign_name": [f"{platform[idx]} {objective[idx]} {industry[idx]} {idx + 1}" for idx in range(rows)],
-            "platform": platform,
-            "objective": objective,
-            "industry": industry,
-            "audience_segment": audience,
-            "device": device,
-            "creative_format": creative,
-            "placement": placement,
-            "geo": rng.choice(GEOS, size=rows),
-            "budget_tier": budget_tier,
+            "date": date,
+            "campaign_id": np.array([f"CMP-{idx + 1:05d}" for idx in range(n)])[camp],
+            "campaign_name": np.array([f"{platform[idx]} {objective[idx]} {industry[idx]} {idx + 1}" for idx in range(n)])[camp],
+            "platform": platform[camp],
+            "objective": objective[camp],
+            "industry": industry[camp],
+            "audience_segment": audience[camp],
+            "device": device[camp],
+            "creative_format": creative[camp],
+            "placement": placement[camp],
+            "geo": geo[camp],
+            "budget_tier": budget_tier[camp],
             "spend": spend,
             "impressions": impressions,
             "clicks": clicks,
             "conversions": conversions,
             "revenue": revenue,
-            "retargeting": np.isin(audience, ["Retargeting", "Lifecycle"]),
+            "retargeting": np.isin(audience[camp], ["Retargeting", "Lifecycle"]),
             "frequency": (impressions / reach).round(2),
             "reach": reach,
             "video_views": video_views,
             "add_to_cart": add_to_cart,
             "landing_page_view": landing_page_view,
-            "quality_score": rng.normal(6.8, 1.2, rows).clip(1, 10).round(1),
+            "quality_score": quality_score[camp],
         }
     )
     return recompute_metrics(frame)

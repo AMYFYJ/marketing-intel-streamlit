@@ -24,6 +24,38 @@ def test_generate_campaign_sample_shape_and_constraints() -> None:
     assert frame["roas"].ge(0).all()
 
 
+def test_generate_campaign_sample_campaigns_persist_across_days() -> None:
+    frame = generate_campaign_sample(rows=5_000, seed=7)
+    days_per_campaign = frame.groupby("campaign_id")["date"].nunique()
+
+    assert days_per_campaign.median() >= 21
+    assert not frame.duplicated(subset=["campaign_id", "date"]).any()
+    # Campaign attributes stay fixed over the campaign's life.
+    assert (frame.groupby("campaign_id")["platform"].nunique() == 1).all()
+    assert (frame.groupby("campaign_id")["objective"].nunique() == 1).all()
+
+
+def test_generate_campaign_sample_is_calibrated_to_believable_economics() -> None:
+    frame = generate_campaign_sample(rows=30_000, seed=42)
+    metrics = summarize_metrics(frame)
+
+    assert 2.0 <= metrics["roas"] <= 5.0
+    assert 20.0 <= metrics["cpa"] <= 120.0
+    platform_roas = frame.groupby("platform").apply(
+        lambda g: g["revenue"].sum() / g["spend"].sum(), include_groups=False
+    )
+    assert platform_roas.max() <= 8.0
+    # Search stays more efficient than LinkedIn, preserving believable ordering.
+    assert platform_roas["Google"] > platform_roas["LinkedIn"]
+
+
+def test_generate_campaign_sample_is_deterministic() -> None:
+    left = generate_campaign_sample(rows=2_000, seed=11)
+    right = generate_campaign_sample(rows=2_000, seed=11)
+
+    pd.testing.assert_frame_equal(left, right)
+
+
 def test_summarize_metrics_uses_weighted_totals() -> None:
     frame = pd.DataFrame(
         {
@@ -47,10 +79,11 @@ def test_summarize_metrics_uses_weighted_totals() -> None:
 
 
 def test_filter_campaigns_by_platform_and_date() -> None:
-    frame = generate_campaign_sample(rows=250, seed=10)
-    platform = frame["platform"].iloc[0]
+    frame = generate_campaign_sample(rows=5_000, seed=10)
     start = frame["date"].min() + pd.Timedelta(days=120)
     end = frame["date"].max() - pd.Timedelta(days=120)
+    in_window = frame[(frame["date"] >= start) & (frame["date"] <= end)]
+    platform = in_window["platform"].mode().iloc[0]
 
     filtered = filter_campaigns(frame, CampaignFilters(start_date=start, end_date=end, platforms=(platform,)))
 
