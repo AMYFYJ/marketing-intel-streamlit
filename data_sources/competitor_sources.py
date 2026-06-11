@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -27,6 +28,20 @@ THEME_TERMS = {
     "Launch": ("new", "launch", "introducing", "announcement"),
     "Education": ("guide", "webinar", "learn", "tips"),
 }
+
+LIVE_LINK_ASSET_TYPE = "Live search link"
+
+
+def _compile_label_patterns(label_terms: dict[str, tuple[str, ...]]) -> dict[str, re.Pattern[str]]:
+    # Word-boundary matching so "sale" does not match "Salesforce" and "ai" does not match "email".
+    return {
+        label: re.compile(r"\b(?:" + "|".join(re.escape(term) for term in terms) + r")\b")
+        for label, terms in label_terms.items()
+    }
+
+
+_CTA_REGEXES = _compile_label_patterns(CTA_PATTERNS)
+_THEME_REGEXES = _compile_label_patterns(THEME_TERMS)
 
 
 @dataclass(frozen=True)
@@ -102,7 +117,25 @@ def fetch_meta_ad_library(
 ) -> tuple[pd.DataFrame, dict[str, str]]:
     if not access_token:
         url = f"https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country={country}&q={quote_plus(search_term)}&search_type=keyword_unordered"
-        return empty_competitor_frame(), _status("Meta Ad Library", search_term, "not configured", f"Set META_ACCESS_TOKEN or open public search: {url}")
+        frame = pd.DataFrame(
+            [
+                {
+                    "source": "Meta Ad Library",
+                    "competitor": competitor,
+                    "keyword": search_term,
+                    "asset_type": LIVE_LINK_ASSET_TYPE,
+                    "title": f"Open Meta Ad Library public search for {search_term}",
+                    "text": "Set META_ACCESS_TOKEN for API results; this link opens the public Ad Library search.",
+                    "url": url,
+                    "published_at": pd.Timestamp.now(tz="UTC"),
+                    "author": "Meta Ad Library",
+                    "platforms": "Meta",
+                    "engagement": 0.0,
+                }
+            ],
+            columns=empty_competitor_frame().columns,
+        )
+        return frame, _status("Meta Ad Library", search_term, "not configured", f"Set META_ACCESS_TOKEN or open public search: {url}")
 
     endpoint = f"https://graph.facebook.com/{api_version}/ads_archive"
     params = {
@@ -153,7 +186,7 @@ def fetch_tiktok_creative_center_link(search_term: str, competitor: str) -> tupl
                 "source": "TikTok Creative Center",
                 "competitor": competitor,
                 "keyword": search_term,
-                "asset_type": "Live search link",
+                "asset_type": LIVE_LINK_ASSET_TYPE,
                 "title": f"Open TikTok Creative Center for {search_term}",
                 "text": "TikTok Creative Center does not expose a stable public API; this link opens live creative results.",
                 "url": url,
@@ -168,7 +201,15 @@ def fetch_tiktok_creative_center_link(search_term: str, competitor: str) -> tupl
     return frame, _status("TikTok Creative Center", search_term, "live link", url)
 
 
+def exclude_live_link_rows(items: pd.DataFrame) -> pd.DataFrame:
+    """Drop synthetic live-search-link placeholder rows so analytics only count real items."""
+    if items.empty or "asset_type" not in items.columns:
+        return items
+    return items[items["asset_type"] != LIVE_LINK_ASSET_TYPE]
+
+
 def compute_share_of_voice(items: pd.DataFrame) -> pd.DataFrame:
+    items = exclude_live_link_rows(items)
     if items.empty:
         return pd.DataFrame(columns=["competitor", "source", "items", "share_of_voice"])
     counts = items.groupby(["competitor", "source"], as_index=False).agg(items=("title", "count"))
@@ -178,6 +219,7 @@ def compute_share_of_voice(items: pd.DataFrame) -> pd.DataFrame:
 
 
 def analyze_creative_patterns(items: pd.DataFrame) -> pd.DataFrame:
+    items = exclude_live_link_rows(items)
     if items.empty:
         return pd.DataFrame(columns=["competitor", "theme", "cta", "items", "avg_sentiment"])
     return (
@@ -189,16 +231,16 @@ def analyze_creative_patterns(items: pd.DataFrame) -> pd.DataFrame:
 
 def detect_cta(text: str) -> str:
     lowered = str(text).lower()
-    for label, patterns in CTA_PATTERNS.items():
-        if any(pattern in lowered for pattern in patterns):
+    for label, regex in _CTA_REGEXES.items():
+        if regex.search(lowered):
             return label
     return "No explicit CTA"
 
 
 def detect_theme(text: str) -> str:
     lowered = str(text).lower()
-    for label, patterns in THEME_TERMS.items():
-        if any(pattern in lowered for pattern in patterns):
+    for label, regex in _THEME_REGEXES.items():
+        if regex.search(lowered):
             return label
     return "General"
 

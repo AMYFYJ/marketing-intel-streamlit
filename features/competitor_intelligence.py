@@ -5,9 +5,11 @@ import plotly.express as px
 import streamlit as st
 
 from data_sources.competitor_sources import (
+    LIVE_LINK_ASSET_TYPE,
     CompetitorQuery,
     analyze_creative_patterns,
     compute_share_of_voice,
+    exclude_live_link_rows,
     fetch_competitor_intelligence,
     parse_competitors,
 )
@@ -41,7 +43,7 @@ def render() -> None:
     with st.form("competitor_controls"):
         c1, c2, c3 = st.columns([2, 2, 1])
         raw_competitors = c1.text_area("Competitors", value="HubSpot, Salesforce, Klaviyo", height=88)
-        raw_keywords = c2.text_area("Keywords or themes", value="AI marketing, customer data, automation", height=88)
+        raw_keywords = c2.text_area("Keywords or themes", value="marketing automation, customer data, email campaigns", height=88)
         country = c3.selectbox("Market", ["US", "GB", "CA", "AU", "DE", "FR"], index=0)
         max_items = c3.slider("Items/source", min_value=5, max_value=50, value=15, step=5)
         sources = st.multiselect(
@@ -66,19 +68,32 @@ def render() -> None:
     youtube_key = _get_secret("YOUTUBE_API_KEY")
     items, statuses = _cached_competitor_intelligence(competitors, keywords, country, max_items, tuple(sources), meta_token, meta_version, youtube_key)
 
-    _render_status(statuses)
-    if items.empty:
-        st.warning("No competitor items were returned. Check source status, broaden keywords, or configure optional API keys.")
+    real_items = exclude_live_link_rows(items)
+    live_links = items[items["asset_type"] == LIVE_LINK_ASSET_TYPE] if not items.empty else items
+
+    _render_status(statuses, expanded=real_items.empty)
+    if real_items.empty:
+        failed = statuses[statuses["status"] == "failed"] if not statuses.empty else pd.DataFrame()
+        if not failed.empty:
+            st.error(
+                "No competitor items were returned because these sources failed: "
+                + ", ".join(sorted(failed["source"].unique()))
+                + ". See the source status table above for details."
+            )
+        else:
+            st.warning("No competitor ads or mentions were returned. Broaden keywords, or use the live search links below.")
+        _render_live_links(live_links)
         return
 
-    sov = compute_share_of_voice(items)
-    patterns = analyze_creative_patterns(items)
+    sov = compute_share_of_voice(real_items)
+    patterns = analyze_creative_patterns(real_items)
     _render_charts(sov, patterns)
-    _render_items(items)
+    _render_items(real_items)
+    _render_live_links(live_links)
 
 
-def _render_status(statuses: pd.DataFrame) -> None:
-    with st.expander("Source status and access notes", expanded=True):
+def _render_status(statuses: pd.DataFrame, expanded: bool = False) -> None:
+    with st.expander("Source status and access notes", expanded=expanded):
         st.dataframe(statuses, use_container_width=True, hide_index=True)
 
 
@@ -92,9 +107,28 @@ def _render_charts(sov: pd.DataFrame, patterns: pd.DataFrame) -> None:
 
 
 def _render_items(items: pd.DataFrame) -> None:
-    st.markdown("#### Latest Ads, Links, and Mentions")
+    st.markdown("#### Latest Ads and Mentions")
     display = items.sort_values("published_at", ascending=False)[["source", "competitor", "keyword", "asset_type", "title", "theme", "cta", "published_at", "url"]].head(300)
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(
+        display,
+        use_container_width=True,
+        hide_index=True,
+        column_config={"url": st.column_config.LinkColumn("url", display_text="Open")},
+    )
+
+
+def _render_live_links(live_links: pd.DataFrame) -> None:
+    if live_links.empty:
+        return
+    st.markdown("#### Live Creative Search")
+    st.caption("These open live search results on platforms without API access. They are excluded from the charts and tables above.")
+    display = live_links[["source", "competitor", "keyword", "url"]].drop_duplicates()
+    st.dataframe(
+        display,
+        use_container_width=True,
+        hide_index=True,
+        column_config={"url": st.column_config.LinkColumn("url", display_text="Open live search")},
+    )
 
 
 def _get_secret(name: str) -> str | None:
