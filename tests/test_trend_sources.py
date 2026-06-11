@@ -87,17 +87,45 @@ def test_trend_summary_and_recommendations() -> None:
         }
     )
 
-    summary = compute_trend_summary(items)
+    summary = compute_trend_summary(items, lookback_days=7)
     angles = recommend_campaign_angles(summary, items)
 
     assert not summary.empty
+    assert {"velocity", "momentum", "recent_mentions"}.issubset(summary.columns)
+    assert set(summary["momentum"]).issubset({"Accelerating", "Steady", "Cooling"})
     assert set(angles["keyword"]) == {"retail media", "TikTok ads"}
+    # Rationale reads in plain language rather than raw internals.
+    assert "recent half" in angles["rationale"].iloc[0]
 
 
-def test_sentiment_score_uses_keyword_lists() -> None:
-    assert sentiment_score("new popular opportunity") > 0
-    assert sentiment_score("expensive problem decline") < 0
-    assert sentiment_score("neutral wording") == 0
+def test_trend_summary_momentum_compares_window_halves() -> None:
+    now = pd.Timestamp.now(tz="UTC")
+    base = {
+        "source": "GDELT",
+        "keyword": "retail media",
+        "url": "",
+        "published_at": now,
+        "snippet": "",
+        "author": "a",
+        "engagement": 0.0,
+        "sentiment": 0.0,
+    }
+    # Three mentions in the recent half (<= 84h for a 7-day lookback), one earlier.
+    items = pd.DataFrame([{**base, "title": f"t{i}", "recency_hours": h} for i, h in enumerate([2.0, 30.0, 80.0, 150.0])])
+
+    summary = compute_trend_summary(items, lookback_days=7)
+
+    assert summary.loc[0, "mentions"] == 4
+    assert summary.loc[0, "recent_mentions"] == 3
+    assert summary.loc[0, "velocity"] == 200.0
+    assert summary.loc[0, "momentum"] == "Accelerating"
+
+
+def test_sentiment_score_handles_real_marketing_headlines() -> None:
+    assert sentiment_score("amazing growth this quarter") > 0
+    assert sentiment_score("lawsuit filed against ad platform") < 0
+    assert sentiment_score("record losses and layoffs announced") < 0
+    assert sentiment_score("the report was published on Tuesday") == 0
 
 
 def test_fetch_demand_pulse_handles_export_only(tmp_path) -> None:

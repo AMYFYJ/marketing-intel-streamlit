@@ -7,11 +7,24 @@ from typing import Callable, Iterable
 from urllib.parse import quote_plus
 
 import feedparser
+import numpy as np
 import pandas as pd
 import requests
 
-POSITIVE_WORDS = {"growth", "launch", "win", "best", "viral", "increase", "strong", "new", "popular", "opportunity", "breakthrough"}
-NEGATIVE_WORDS = {"drop", "decline", "bad", "risk", "problem", "complaint", "down", "weak", "expensive", "delay", "controversy"}
+# Momentum thresholds for the recent-vs-earlier mention comparison (percent).
+ACCELERATING_THRESHOLD = 25.0
+COOLING_THRESHOLD = -25.0
+
+_VADER_ANALYZER = None
+
+
+def _vader():
+    global _VADER_ANALYZER
+    if _VADER_ANALYZER is None:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+        _VADER_ANALYZER = SentimentIntensityAnalyzer()
+    return _VADER_ANALYZER
 
 
 @dataclass(frozen=True)
@@ -124,6 +137,12 @@ def fetch_reddit(keyword: str, max_records: int = 25, lookback_days: int = 7) ->
     try:
         feed = feedparser.parse(url, request_headers={"User-Agent": "marketing-intel-streamlit/1.0"})
         entries = feed.entries[:max_records]
+        # Report blocked or malformed responses as failures instead of "ok, 0 posts".
+        http_status = int(getattr(feed, "status", 200) or 200)
+        if http_status >= 400:
+            return empty_trend_frame(), _status("Reddit", keyword, "failed", f"HTTP {http_status} from Reddit RSS (often IP blocking on cloud hosts)")
+        if not entries and getattr(feed, "bozo", False):
+            return empty_trend_frame(), _status("Reddit", keyword, "failed", f"Unparseable feed: {getattr(feed, 'bozo_exception', 'unknown error')}")
     except Exception as exc:  # pragma: no cover
         return empty_trend_frame(), _status("Reddit", keyword, "failed", str(exc))
 
@@ -209,18 +228,37 @@ def load_trends_export(path: Path, source_name: str) -> tuple[pd.DataFrame, dict
     return pd.DataFrame(rows, columns=empty_trend_frame().columns), _status(source_name, "export", "ok", f"{len(rows)} rows")
 
 
-def compute_trend_summary(items: pd.DataFrame) -> pd.DataFrame:
+def compute_trend_summary(items: pd.DataFrame, lookback_days: int = 7) -> pd.DataFrame:
+    """Per keyword/source: mention counts plus momentum.
+
+    Velocity is the percent change in mentions between the most recent half of
+    the lookback window and the earlier half, labeled Accelerating / Steady /
+    Cooling so the number reads directly.
+    """
+    columns = ["keyword", "source", "mentions", "recent_mentions", "velocity", "momentum", "avg_sentiment", "engagement"]
     if items.empty:
-        return pd.DataFrame(columns=["keyword", "source", "mentions", "velocity", "avg_sentiment", "engagement"])
+        return pd.DataFrame(columns=columns)
     df = items.copy()
-    df["recency_weight"] = 1 / (1 + df["recency_hours"].fillna(168) / 24)
+    half_window_hours = lookback_days * 24 / 2
+    df["is_recent"] = df["recency_hours"].fillna(lookback_days * 24) <= half_window_hours
     summary = df.groupby(["keyword", "source"], as_index=False).agg(
         mentions=("title", "count"),
-        velocity=("recency_weight", "sum"),
+        recent_mentions=("is_recent", "sum"),
         avg_sentiment=("sentiment", "mean"),
         engagement=("engagement", "sum"),
     )
-    return summary.sort_values(["velocity", "mentions"], ascending=False)
+    earlier = summary["mentions"] - summary["recent_mentions"]
+    summary["velocity"] = np.where(
+        earlier > 0,
+        (summary["recent_mentions"] - earlier) / earlier * 100,
+        np.where(summary["recent_mentions"] > 0, 100.0, 0.0),
+    )
+    summary["momentum"] = np.select(
+        [summary["velocity"] >= ACCELERATING_THRESHOLD, summary["velocity"] <= COOLING_THRESHOLD],
+        ["Accelerating", "Cooling"],
+        default="Steady",
+    )
+    return summary[columns].sort_values(["velocity", "mentions"], ascending=False)
 
 
 def recommend_campaign_angles(summary: pd.DataFrame, items: pd.DataFrame) -> pd.DataFrame:
@@ -228,14 +266,19 @@ def recommend_campaign_angles(summary: pd.DataFrame, items: pd.DataFrame) -> pd.
         return pd.DataFrame(columns=["keyword", "angle", "rationale"])
     rows = []
     for keyword, group in summary.groupby("keyword"):
-        velocity = float(group["velocity"].sum())
+        mentions = int(group["mentions"].sum())
+        recent = int(group["recent_mentions"].sum())
+        earlier = mentions - recent
+        velocity = ((recent - earlier) / earlier * 100) if earlier > 0 else (100.0 if recent > 0 else 0.0)
         sentiment = float(group["avg_sentiment"].mean())
         top_source = group.sort_values("mentions", ascending=False).iloc[0]["source"]
+        momentum = "accelerating" if velocity >= ACCELERATING_THRESHOLD else ("cooling" if velocity <= COOLING_THRESHOLD else "steady")
+        tone = "positive" if sentiment > 0.15 else ("negative" if sentiment < -0.15 else "neutral")
         if sentiment > 0.15:
             angle = "Lean into proof and momentum"
         elif sentiment < -0.15:
             angle = "Address objections directly"
-        elif velocity >= summary["velocity"].quantile(0.70):
+        elif velocity >= ACCELERATING_THRESHOLD:
             angle = "Launch timely educational creative"
         else:
             angle = "Monitor and test low-budget creative"
@@ -243,20 +286,18 @@ def recommend_campaign_angles(summary: pd.DataFrame, items: pd.DataFrame) -> pd.
             {
                 "keyword": keyword,
                 "angle": angle,
-                "rationale": f"{top_source} is the leading source with velocity {velocity:.1f} and sentiment {sentiment:.2f}.",
+                "rationale": (
+                    f"{mentions} mentions, {momentum} ({velocity:+.0f}% recent half vs earlier half) "
+                    f"with {tone} sentiment ({sentiment:+.2f}); most coverage from {top_source}."
+                ),
             }
         )
     return pd.DataFrame(rows).sort_values("keyword")
 
 
 def sentiment_score(text: str) -> float:
-    words = {word.strip(".,!?;:()[]{}\"'").lower() for word in str(text).split()}
-    positive = len(words.intersection(POSITIVE_WORDS))
-    negative = len(words.intersection(NEGATIVE_WORDS))
-    total = positive + negative
-    if total == 0:
-        return 0.0
-    return (positive - negative) / total
+    """VADER compound score in [-1, 1]; built for short social/news text."""
+    return float(_vader().polarity_scores(str(text))["compound"])
 
 
 def empty_trend_frame() -> pd.DataFrame:
