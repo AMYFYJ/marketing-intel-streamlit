@@ -22,6 +22,21 @@ INDUSTRIES = ["Retail", "SaaS", "Beauty", "Finance", "Travel", "Healthcare", "Ed
 AUDIENCES = ["Prospecting", "Lookalike", "Retargeting", "High Intent", "Lifecycle", "Lapsed Customer"]
 DEVICES = ["Mobile", "Desktop", "Tablet"]
 CREATIVES = ["Video", "Static Image", "Carousel", "Collection", "Short-form Video", "Text Search"]
+
+# Which creative formats are actually buyable on each platform. Single source of truth shared by the
+# data generators (so synthetic rows are realistic) and the goal planner (so it never recommends an
+# impossible combo like Text Search on TikTok).
+PLATFORM_CREATIVE_FORMATS: dict[str, tuple[str, ...]] = {
+    "Meta": ("Video", "Static Image", "Carousel", "Collection", "Short-form Video"),
+    "Google": ("Text Search", "Static Image", "Video"),
+    "TikTok": ("Short-form Video", "Video"),
+    "LinkedIn": ("Static Image", "Carousel", "Video"),
+    "YouTube": ("Video", "Short-form Video"),
+    "Pinterest": ("Static Image", "Carousel", "Collection", "Video"),
+    "Snapchat": ("Short-form Video", "Video", "Static Image", "Collection"),
+    "Reddit": ("Static Image", "Video", "Carousel"),
+}
+
 PLACEMENTS = ["Feed", "Stories", "Search", "Reels/Shorts", "Display", "Marketplace", "In-stream"]
 GEOS = ["US", "Canada", "UK", "Australia", "Germany", "France", "Brazil", "Mexico"]
 BUDGET_TIERS = ["Test", "Growth", "Scale", "Enterprise"]
@@ -147,6 +162,21 @@ def _snake(value: str) -> str:
     )
 
 
+def sample_creative_by_platform(platform: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Pick a creative format for each row from only the formats valid on that row's platform.
+
+    Replaces independent creative sampling so the data never contains impossible combos like
+    Text Search on TikTok. Uses ``PLATFORM_CREATIVE_FORMATS`` as the single source of truth.
+    """
+    creative = np.empty(len(platform), dtype=object)
+    for name, formats in PLATFORM_CREATIVE_FORMATS.items():
+        mask = platform == name
+        count = int(mask.sum())
+        if count:
+            creative[mask] = rng.choice(np.array(formats, dtype=object), size=count)
+    return creative
+
+
 def generate_campaign_sample(rows: int = 10_000, seed: int = 42) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     dates = pd.date_range("2024-01-01", "2026-01-31", freq="D")
@@ -156,13 +186,13 @@ def generate_campaign_sample(rows: int = 10_000, seed: int = 42) -> pd.DataFrame
     industry = rng.choice(INDUSTRIES, size=rows)
     audience = rng.choice(AUDIENCES, size=rows, p=[0.30, 0.18, 0.20, 0.12, 0.12, 0.08])
     device = rng.choice(DEVICES, size=rows, p=[0.68, 0.27, 0.05])
-    creative = rng.choice(CREATIVES, size=rows, p=[0.24, 0.24, 0.15, 0.08, 0.20, 0.09])
+    creative = sample_creative_by_platform(platform, rng)
     placement = rng.choice(PLACEMENTS, size=rows)
     budget_tier = rng.choice(BUDGET_TIERS, size=rows, p=[0.42, 0.34, 0.19, 0.05])
 
-    platform_ctr = {"Meta": 0.011, "Google": 0.037, "TikTok": 0.014, "LinkedIn": 0.008, "YouTube": 0.010, "Pinterest": 0.012, "Snapchat": 0.013, "Reddit": 0.009}
-    objective_cvr = {"Awareness": 0.012, "Traffic": 0.025, "Lead Gen": 0.055, "Sales": 0.042, "App Install": 0.038, "Retargeting": 0.082}
-    platform_cpm = {"Meta": 12, "Google": 18, "TikTok": 9, "LinkedIn": 34, "YouTube": 14, "Pinterest": 10, "Snapchat": 8, "Reddit": 11}
+    platform_ctr = {"Meta": 0.011, "Google": 0.026, "TikTok": 0.014, "LinkedIn": 0.010, "YouTube": 0.010, "Pinterest": 0.012, "Snapchat": 0.013, "Reddit": 0.009}
+    objective_cvr = {"Awareness": 0.009, "Traffic": 0.018, "Lead Gen": 0.024, "Sales": 0.016, "App Install": 0.018, "Retargeting": 0.034}
+    platform_cpm = {"Meta": 13, "Google": 23, "TikTok": 13, "LinkedIn": 30, "YouTube": 14, "Pinterest": 12, "Snapchat": 11, "Reddit": 12}
     tier_spend = {"Test": 450, "Growth": 1800, "Scale": 5800, "Enterprise": 17000}
 
     base_spend = np.array([tier_spend[tier] for tier in budget_tier], dtype=float)
@@ -171,7 +201,7 @@ def generate_campaign_sample(rows: int = 10_000, seed: int = 42) -> pd.DataFrame
     impressions = np.maximum((spend / cpm * 1000).astype(int), 500)
 
     ctr_base = np.array([platform_ctr[item] for item in platform], dtype=float)
-    ctr_mod = np.where(creative == "Text Search", 1.8, np.where(creative == "Video", 1.12, 1.0))
+    ctr_mod = np.where(creative == "Text Search", 1.25, np.where(creative == "Video", 1.12, 1.0))
     ctr = np.clip(ctr_base * ctr_mod * rng.lognormal(0, 0.30, rows), 0.001, 0.18)
     clicks = np.minimum(rng.binomial(impressions, ctr), impressions)
 
@@ -181,14 +211,14 @@ def generate_campaign_sample(rows: int = 10_000, seed: int = 42) -> pd.DataFrame
     conversions = np.minimum(rng.binomial(np.maximum(clicks, 1), cvr), clicks)
 
     aov_by_industry = {
-        "Retail": 72,
-        "SaaS": 310,
-        "Beauty": 56,
-        "Finance": 420,
-        "Travel": 260,
-        "Healthcare": 180,
-        "Education": 140,
-        "Gaming": 38,
+        "Retail": 64,
+        "SaaS": 170,
+        "Beauty": 52,
+        "Finance": 240,
+        "Travel": 170,
+        "Healthcare": 130,
+        "Education": 110,
+        "Gaming": 34,
     }
     aov = np.array([aov_by_industry[item] for item in industry], dtype=float) * rng.lognormal(0, 0.33, rows)
     revenue = (conversions * aov * rng.uniform(0.82, 1.18, rows)).round(2)

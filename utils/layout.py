@@ -4,8 +4,8 @@ import streamlit as st
 
 
 def render_app_header() -> None:
-    st.title("Marketing Intelligence Dashboard")
-    st.caption("Paid media performance, competitor intelligence, demand signals, and budget planning in one Streamlit app.")
+    st.title("Marketing Intelligence Command Center")
+    st.caption("Paid media diagnostics, competitor signals, demand momentum, and goal-based budget planning in one Streamlit app.")
 
 
 def render_data_sources() -> None:
@@ -21,10 +21,12 @@ def render_data_sources() -> None:
         - GDELT and Reddit provide no-key public trend signals.
         - YouTube Data API is used when `YOUTUBE_API_KEY` is configured.
         - Meta Ad Library API is used when `META_ACCESS_TOKEN` is configured; otherwise the app provides public search links.
-        - TikTok Creative Center is covered with live deep links because a stable public API is not available here.
+        - TikTok Creative Center, LinkedIn Ad Library, and the EU-only X Ads Repository are covered with live deep links because stable public APIs are not available here.
 
         **Budget optimizer**
-        - Uses a 250k-row synthetic media-mix dataset generated in memory.
+        - Goal-driven planner: enter a budget and a goal (conversions, revenue, traffic, awareness, leads, app installs, or follower/engagement growth) to get platform mix, per-platform campaign type and audience, allocation, and expected cost-per-goal and goal volume.
+        - Follower growth is not reported by ad APIs, so that goal uses ad engagement (likes/comments/shares/saves) as a documented proxy.
+        - Uses a 250k-row synthetic media-mix dataset generated in memory; an Advanced ROAS/CPA optimizer is also available.
         - CSV upload and API connector stubs are included for future real campaign data.
         """
     )

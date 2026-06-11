@@ -118,6 +118,73 @@ def fetch_gdelt(keyword: str, max_records: int = 25, request_get: Callable[..., 
     return pd.DataFrame(rows, columns=empty_trend_frame().columns), _status("GDELT", keyword, "ok", f"{len(rows)} articles")
 
 
+def fetch_gdelt_timeline(
+    keyword: str,
+    lookback_days: int = 7,
+    baseline_days: int = 84,
+    request_get: Callable[..., object] = requests.get,
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Fetch a daily news-volume time series for a keyword from GDELT's TimelineVolRaw mode.
+
+    Returns a tidy frame with columns ``date``, ``keyword``, ``volume``, ``norm`` covering the
+    trailing ``baseline_days`` window. The longer baseline window lets callers compare the recent
+    ``lookback_days`` against the keyword's own trailing history. No API key is required.
+    """
+    span = max(int(baseline_days), int(lookback_days), 1)
+    url = "https://api.gdeltproject.org/api/v2/doc/doc"
+    params = {
+        "query": keyword,
+        "mode": "TimelineVolRaw",
+        "format": "json",
+        "timespan": f"{span}d",
+        "timelinesmooth": 3,
+    }
+    try:
+        response = request_get(url, params=params, timeout=12)
+        status_code = getattr(response, "status_code", 200)
+        if status_code == 429:
+            return empty_timeline_frame(), _status("GDELT timeline", keyword, "rate limited", "GDELT allows roughly one request every five seconds")
+        response.raise_for_status()
+        payload = response.json()
+        timeline = payload.get("timeline", [])
+    except ValueError as exc:
+        return empty_timeline_frame(), _status("GDELT timeline", keyword, "failed", f"Non-JSON response: {exc}")
+    except Exception as exc:  # pragma: no cover - exercised through status behavior in app
+        return empty_timeline_frame(), _status("GDELT timeline", keyword, "failed", str(exc))
+
+    series = timeline[0].get("data", []) if timeline else []
+    rows = []
+    for point in series:
+        rows.append(
+            {
+                "date": _parse_datetime(point.get("date")).normalize(),
+                "keyword": keyword,
+                "volume": float(point.get("value", 0) or 0),
+                "norm": float(point.get("norm", 0) or 0),
+            }
+        )
+    frame = pd.DataFrame(rows, columns=empty_timeline_frame().columns)
+    return frame, _status("GDELT timeline", keyword, "ok", f"{len(rows)} days")
+
+
+def build_daily_series(items: pd.DataFrame, lookback_days: int = 7) -> pd.DataFrame:
+    """Bucket item-level signals (Reddit, YouTube, GDELT articles) into per-day counts.
+
+    Produces the same ``date, keyword, volume, norm`` schema as :func:`fetch_gdelt_timeline` so it
+    can stand in as a corroborating series or a fallback when the GDELT timeline is unavailable.
+    """
+    if items.empty:
+        return empty_timeline_frame()
+    df = items.copy()
+    df["date"] = pd.to_datetime(df["published_at"], errors="coerce", utc=True).dt.tz_convert(None).dt.normalize()
+    df = df.dropna(subset=["date"])
+    if df.empty:
+        return empty_timeline_frame()
+    grouped = df.groupby(["keyword", "date"], as_index=False).agg(volume=("title", "count"))
+    grouped["norm"] = grouped.groupby("keyword")["volume"].transform("sum")
+    return grouped[["date", "keyword", "volume", "norm"]].sort_values(["keyword", "date"]).reset_index(drop=True)
+
+
 def fetch_reddit(keyword: str, max_records: int = 25, lookback_days: int = 7) -> tuple[pd.DataFrame, dict[str, str]]:
     encoded = quote_plus(keyword)
     url = f"https://www.reddit.com/search.rss?q={encoded}&sort=new&t=week"
@@ -261,6 +328,10 @@ def sentiment_score(text: str) -> float:
 
 def empty_trend_frame() -> pd.DataFrame:
     return pd.DataFrame(columns=["source", "keyword", "title", "url", "published_at", "snippet", "author", "engagement"])
+
+
+def empty_timeline_frame() -> pd.DataFrame:
+    return pd.DataFrame(columns=["date", "keyword", "volume", "norm"])
 
 
 def _status(source: str, keyword: str, status: str, detail: str) -> dict[str, str]:

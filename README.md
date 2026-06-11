@@ -6,10 +6,10 @@ Public repo: https://github.com/AMYFYJ/marketing-intel-streamlit
 
 ## What It Does
 
-- **Performance**: paid-media KPI command center with campaign filters, ROAS/CPA/CTR/CVR metrics, anomaly flags, and action recommendations.
-- **Competitor Intelligence**: competitor and creative monitoring across Meta Ad Library, TikTok Creative Center, YouTube, Reddit, and GDELT/news.
-- **Demand Pulse**: live demand monitoring for marketing topics using GDELT, Reddit, optional YouTube, and trend exports.
-- **Budget Optimizer**: 250k-row synthetic media-mix dataset with spend allocation, diminishing-return logic, and CSV/API connector paths.
+- **Performance**: paid-media KPI command center with campaign filters, period deltas, ROAS/CPA/CTR/CVR metrics, segment diagnostics, funnel health, campaign actions, and scenario projections.
+- **Competitor Intelligence**: competitor and creative monitoring across Meta Ad Library, TikTok Creative Center, LinkedIn Ad Library, the EU-only X Ads Repository, YouTube, Reddit, and GDELT/news — with creative theme/CTA detection, share-of-voice, and next-test strategy recommendations.
+- **Demand Pulse**: live demand monitoring for marketing topics across GDELT, Reddit, optional YouTube, and trend exports — with trend lifecycle/momentum staging (GDELT TimelineVolRaw daily volume), signal-confidence and corroboration scoring, demand-vs-baseline anomaly detection, and a capped, explained action queue.
+- **Budget Optimizer**: goal-driven media planner — enter a budget and a goal (conversions, revenue, traffic, awareness, leads, app installs, or follower/engagement growth) to get the platform mix, recommended campaign type and audience per platform, budget allocation, and expected cost-per-goal and goal volume. Recommendations are reality-checked (platform-valid creative formats; upper-funnel goals never sold against retargeting pools), small budgets concentrate via a min-spend-per-platform floor, and a Returns & Sensitivity section shows per-platform response curves plus a budget sweep ("what would +$10k buy?"). Demand Pulse momentum and Competitor Intelligence pressure feed a strategic-context panel with an optional whitespace tilt. Synthetic benchmarks are calibrated to realistic industry ranges (platform ROAS ~1.5–4.5x). Also includes an Advanced ROAS/CPA optimizer and CSV/API connector paths. Follower growth isn't reported by ad APIs, so that goal uses ad engagement as a documented proxy.
 - **Data Sources**: source attribution and deployment notes.
 
 ## Data Sources
@@ -36,6 +36,8 @@ If no CSV is present, the app uses a deterministic fallback campaign sample with
 - YouTube Data API when `YOUTUBE_API_KEY` is configured.
 - Meta Ad Library API when `META_ACCESS_TOKEN` is configured, plus public Ad Library search links when it is not.
 - TikTok Creative Center live links: https://ads.tiktok.com/business/creativecenter/
+- LinkedIn Ad Library live links for public advertiser, keyword, country, and date-range research: https://www.linkedin.com/ads/library/
+- X Ads Repository live link for EU Digital Services Act ad transparency research: https://ads.twitter.com/ads-repository
 - Optional `data/google_trends_export.csv` and `data/pinterest_trends_export.csv` files for trend-export workflows.
 
 ## Local Setup
@@ -64,7 +66,7 @@ META_ACCESS_TOKEN = ""
 META_GRAPH_VERSION = "v21.0"
 ```
 
-The app runs without these secrets. YouTube and Meta API calls will show `not configured` status and fall back to public links or other sources.
+The app runs without these secrets. YouTube and Meta API calls will show `not configured` status and fall back to public links, preview snapshots, exports, or other no-key sources.
 
 ## Streamlit Community Cloud Deployment
 
@@ -78,5 +80,9 @@ The app runs without these secrets. YouTube and Meta API calls will show `not co
 
 - Meta Ad Library API access is optional and separate from private Meta campaign API access.
 - TikTok Creative Center does not expose a stable public API in this implementation, so the app provides live deep links rather than scraping.
+- LinkedIn Ad Library is supported as a live-link source; deeper API access requires LinkedIn approval.
+- X Ads Repository coverage is EU/DSA-specific and should not be read as a global X competitor ad scan.
 - GDELT rate-limits frequent calls; the app surfaces `rate limited` status and uses Streamlit caching.
+- Public competitor and demand sources are directional signals, not verified media performance metrics.
+- Follower growth is not reported by ad APIs, so the Budget Optimizer uses ad engagement as a documented proxy for that goal.
 - The synthetic optimizer dataset is generated in memory and is not committed to the repo.

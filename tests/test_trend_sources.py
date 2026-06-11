@@ -4,9 +4,11 @@ import pandas as pd
 
 from data_sources.trend_sources import (
     TrendQuery,
+    build_daily_series,
     compute_trend_summary,
     fetch_demand_pulse,
     fetch_gdelt,
+    fetch_gdelt_timeline,
     fetch_youtube,
     parse_keywords,
     recommend_campaign_angles,
@@ -122,6 +124,60 @@ def test_fetch_gdelt_reports_rate_limit() -> None:
 
     assert frame.empty
     assert status["status"] == "rate limited"
+
+
+def test_fetch_gdelt_timeline_parses_series() -> None:
+    def fake_get(*args, **kwargs):
+        return FakeResponse(
+            {
+                "timeline": [
+                    {
+                        "series": "Volume Intensity",
+                        "data": [
+                            {"date": "20260101T120000Z", "value": 5, "norm": 100},
+                            {"date": "20260102T120000Z", "value": 8, "norm": 100},
+                        ],
+                    }
+                ]
+            }
+        )
+
+    frame, status = fetch_gdelt_timeline("AI marketing", lookback_days=7, request_get=fake_get)
+
+    assert status["status"] == "ok"
+    assert len(frame) == 2
+    assert list(frame.columns) == ["date", "keyword", "volume", "norm"]
+    assert frame.loc[0, "volume"] == 5.0
+    assert frame.loc[0, "keyword"] == "AI marketing"
+
+
+def test_fetch_gdelt_timeline_reports_rate_limit() -> None:
+    def fake_get(*args, **kwargs):
+        return FakeResponse({}, status_code=429)
+
+    frame, status = fetch_gdelt_timeline("AI marketing", request_get=fake_get)
+
+    assert frame.empty
+    assert status["status"] == "rate limited"
+
+
+def test_build_daily_series_buckets_items_per_day() -> None:
+    now = pd.Timestamp("2026-01-03 09:00", tz="UTC")
+    items = pd.DataFrame(
+        {
+            "source": ["GDELT", "Reddit", "GDELT"],
+            "keyword": ["ai marketing", "ai marketing", "ai marketing"],
+            "title": ["a", "b", "c"],
+            "published_at": [now, now, now - pd.Timedelta(days=1)],
+        }
+    )
+
+    series = build_daily_series(items)
+
+    assert list(series.columns) == ["date", "keyword", "volume", "norm"]
+    assert series["volume"].sum() == 3
+    # Two items share the most recent day, one falls on the prior day.
+    assert set(series["volume"]) == {1, 2}
 
 
 def test_fetch_demand_pulse_handles_all_empty_sources(tmp_path) -> None:

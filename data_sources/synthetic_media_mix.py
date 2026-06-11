@@ -16,7 +16,24 @@ from data_sources.campaign_data import (
     PLATFORMS,
     generate_campaign_sample,
     recompute_metrics,
+    sample_creative_by_platform,
 )
+
+# Platform strengths by objective: how much better a platform converts a given objective than the
+# baseline. Encodes real-world fit (LinkedIn for B2B leads, Google for high-intent sales, TikTok for
+# installs/awareness) so per-objective efficiency differs by platform and goal plans diverge.
+PLATFORM_OBJECTIVE_FIT: dict[tuple[str, str], float] = {
+    ("LinkedIn", "Lead Gen"): 1.9,
+    ("Meta", "Lead Gen"): 1.3,
+    ("Google", "Sales"): 1.4,
+    ("Meta", "Sales"): 1.15,
+    ("TikTok", "App Install"): 1.7,
+    ("Snapchat", "App Install"): 1.3,
+    ("Google", "App Install"): 1.3,
+    ("TikTok", "Awareness"): 1.2,
+    ("Snapchat", "Awareness"): 1.2,
+    ("Google", "Traffic"): 1.25,
+}
 
 DEFAULT_SYNTHETIC_ROWS = 250_000
 
@@ -83,7 +100,7 @@ def generate_synthetic_media_mix(
     industry = rng.choice(INDUSTRIES, size=rows)
     audience = rng.choice(AUDIENCES, size=rows, p=[0.28, 0.18, 0.22, 0.14, 0.11, 0.07])
     device = rng.choice(DEVICES, size=rows, p=[0.70, 0.25, 0.05])
-    creative = rng.choice(CREATIVES, size=rows, p=[0.22, 0.22, 0.16, 0.08, 0.22, 0.10])
+    creative = sample_creative_by_platform(platform, rng)
     geo = rng.choice(GEOS, size=rows)
     budget_tier = rng.choice(BUDGET_TIERS, size=rows, p=[0.40, 0.35, 0.20, 0.05])
 
@@ -104,6 +121,8 @@ def generate_synthetic_media_mix(
 
     cvr = bench["cvr"].to_numpy(dtype=float) * rng.lognormal(0, 0.25, rows)
     cvr *= np.where(audience == "Retargeting", 1.55, np.where(audience == "High Intent", 1.24, 1.0))
+    fit = np.array([PLATFORM_OBJECTIVE_FIT.get((p, o), 1.0) for p, o in zip(platform, objective)], dtype=float)
+    cvr *= fit
     cvr *= diminishing_return_index
     cvr = np.clip(cvr, 0.0005, 0.40)
     conversions = np.minimum(rng.binomial(np.maximum(clicks, 1), cvr), clicks)
@@ -112,6 +131,29 @@ def generate_synthetic_media_mix(
     revenue = (conversions * aov * seasonality * rng.uniform(0.86, 1.14, rows)).round(2)
     incremental_revenue = (revenue * np.clip(diminishing_return_index * rng.uniform(0.72, 1.02, rows), 0.08, 1.0)).round(2)
     marginal_roas = incremental_revenue / np.maximum(spend, 1)
+
+    # Engagement (likes/comments/shares/saves) proxies follower/community growth, which ad APIs do
+    # not report directly. Social and short-form-video placements drive far more of it than search.
+    platform_engage_rate = {
+        "Meta": 0.045,
+        "Google": 0.006,
+        "TikTok": 0.085,
+        "LinkedIn": 0.020,
+        "YouTube": 0.038,
+        "Pinterest": 0.050,
+        "Snapchat": 0.060,
+        "Reddit": 0.030,
+    }
+    engage_rate = pd.Series(platform).map(platform_engage_rate).fillna(0.025).to_numpy(dtype=float)
+    creative_engage_mod = np.where(
+        np.isin(creative, ["Short-form Video", "Video"]),
+        1.7,
+        np.where(creative == "Text Search", 0.15, 1.0),
+    )
+    engagement = np.maximum(
+        (impressions * engage_rate * creative_engage_mod * rng.lognormal(0, 0.30, rows)).astype(int),
+        clicks,
+    )
 
     frame = pd.DataFrame(
         {
@@ -131,6 +173,7 @@ def generate_synthetic_media_mix(
             "clicks": clicks,
             "conversions": conversions,
             "revenue": revenue,
+            "engagement": engagement,
             "incremental_revenue": incremental_revenue,
             "marginal_roas": marginal_roas,
             "seasonality_index": seasonality.round(3),

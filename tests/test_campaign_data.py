@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from data_sources.campaign_data import (
+    PLATFORM_CREATIVE_FORMATS,
     CampaignFilters,
     add_recommendations,
     detect_anomalies,
@@ -58,6 +59,24 @@ def test_filter_campaigns_by_platform_and_date() -> None:
     assert set(filtered["platform"].unique()) == {platform}
     assert filtered["date"].min() >= start
     assert filtered["date"].max() <= end
+
+
+def test_creative_formats_are_valid_for_each_platform() -> None:
+    frame = generate_campaign_sample(rows=8_000, seed=42)
+    for platform, group in frame.groupby("platform"):
+        used = set(group["creative_format"].unique())
+        assert used.issubset(set(PLATFORM_CREATIVE_FORMATS[platform])), (platform, used)
+
+
+def test_benchmarks_are_realistic() -> None:
+    frame = generate_campaign_sample(rows=20_000, seed=42)
+    by_platform = frame.groupby("platform").agg(roas=("roas", "mean"), cpa=("cpa", "median"))
+
+    # Believable paid-media ranges (no more 17x ROAS / $10 CPA fantasy numbers).
+    assert by_platform["roas"].between(1.0, 5.0).all(), by_platform["roas"].to_dict()
+    assert by_platform["cpa"].between(15, 200).all(), by_platform["cpa"].to_dict()
+    blended = frame["revenue"].sum() / frame["spend"].sum()
+    assert 2.0 <= blended <= 4.5, blended
 
 
 def test_recommendations_and_anomaly_columns_are_added() -> None:

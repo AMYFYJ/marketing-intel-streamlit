@@ -48,3 +48,28 @@ def test_validate_media_mix_frame_catches_invalid_constraints() -> None:
 
 def test_default_synthetic_scale_constant() -> None:
     assert DEFAULT_SYNTHETIC_ROWS == 250_000
+
+
+def test_synthetic_media_mix_creative_formats_are_valid() -> None:
+    from data_sources.campaign_data import PLATFORM_CREATIVE_FORMATS
+
+    frame = generate_synthetic_media_mix(rows=8_000, seed=42)
+    for platform, group in frame.groupby("platform"):
+        assert set(group["creative_format"].unique()).issubset(set(PLATFORM_CREATIVE_FORMATS[platform]))
+
+
+def test_synthetic_media_mix_objective_fit_differentiates_platforms() -> None:
+    frame = generate_synthetic_media_mix(rows=40_000, seed=2026)
+    lead_cvr = frame[frame["objective"] == "Lead Gen"].groupby("platform")["cvr"].mean()
+    # LinkedIn is tuned to be the strongest Lead-Gen platform.
+    assert lead_cvr.idxmax() == "LinkedIn"
+
+
+def test_synthetic_media_mix_has_engagement_proxy() -> None:
+    frame = generate_synthetic_media_mix(rows=2_000, seed=7)
+
+    assert "engagement" in frame.columns
+    assert frame["engagement"].ge(0).all()
+    assert frame["engagement"].sum() > 0
+    # Engagement should never be smaller than clicks (clicks are a floor on it).
+    assert frame["engagement"].ge(frame["clicks"]).all()

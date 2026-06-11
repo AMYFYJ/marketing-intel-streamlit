@@ -34,6 +34,10 @@ def normalize_uploaded_campaign_csv(frame: pd.DataFrame) -> pd.DataFrame:
         normalized["diminishing_return_index"] = 0.72
     if "incremental_revenue" not in normalized.columns:
         normalized["incremental_revenue"] = normalized["revenue"] * 0.65
+    if "engagement" not in normalized.columns:
+        # Ad exports rarely include a unified engagement field; approximate from clicks so the
+        # goal planner's follower/engagement proxy still has a usable signal.
+        normalized["engagement"] = (normalized["clicks"] * 1.5).round().clip(lower=0)
     return normalized
 
 
