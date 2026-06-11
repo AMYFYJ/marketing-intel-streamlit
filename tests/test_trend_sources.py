@@ -44,6 +44,24 @@ def test_fetch_gdelt_parses_articles() -> None:
     assert frame.loc[0, "keyword"] == "AI marketing"
 
 
+def test_fetch_gdelt_applies_lookback_window_params() -> None:
+    captured_params = {}
+
+    def fake_get(*args, **kwargs):
+        captured_params.update(kwargs["params"])
+        return FakeResponse({"articles": []})
+
+    fetch_gdelt(
+        "AI marketing",
+        request_get=fake_get,
+        lookback_days=3,
+        now=pd.Timestamp("2026-02-10T12:00:00Z"),
+    )
+
+    assert captured_params["startdatetime"] == "20260207120000"
+    assert captured_params["enddatetime"] == "20260210120000"
+
+
 def test_fetch_youtube_requires_key_and_parses_results() -> None:
     empty, status = fetch_youtube("ads", None)
     assert empty.empty
@@ -70,6 +88,24 @@ def test_fetch_youtube_requires_key_and_parses_results() -> None:
 
     assert status["status"] == "ok"
     assert frame.loc[0, "url"] == "https://www.youtube.com/watch?v=abc123"
+
+
+def test_fetch_youtube_applies_published_after() -> None:
+    captured_params = {}
+
+    def fake_get(*args, **kwargs):
+        captured_params.update(kwargs["params"])
+        return FakeResponse({"items": []})
+
+    fetch_youtube(
+        "ads",
+        "key",
+        request_get=fake_get,
+        lookback_days=2,
+        now=pd.Timestamp("2026-02-10T12:00:00Z"),
+    )
+
+    assert captured_params["publishedAfter"] == "2026-02-08T12:00:00Z"
 
 
 def test_trend_summary_and_recommendations() -> None:
@@ -110,10 +146,34 @@ def test_fetch_demand_pulse_handles_export_only(tmp_path) -> None:
         TrendQuery(keywords=("AI marketing",)),
         sources=("Google Trends export",),
         data_dir=tmp_path,
+        now=pd.Timestamp("2026-01-05T00:00:00Z"),
     )
 
     assert len(items) == 1
     assert statuses.loc[0, "status"] == "ok"
+
+
+def test_fetch_demand_pulse_filters_exports_by_keyword_and_lookback(tmp_path) -> None:
+    export = tmp_path / "google_trends_export.csv"
+    export.write_text(
+        "date,keyword,value\n"
+        "2026-02-09,AI marketing,88\n"
+        "2026-01-01,AI marketing,44\n"
+        "2026-02-09,retail media,77\n",
+        encoding="utf-8",
+    )
+
+    items, statuses = fetch_demand_pulse(
+        TrendQuery(keywords=("AI marketing",), lookback_days=7),
+        sources=("Google Trends export",),
+        data_dir=tmp_path,
+        now=pd.Timestamp("2026-02-10T12:00:00Z"),
+    )
+
+    assert len(items) == 1
+    assert items.loc[0, "keyword"] == "AI marketing"
+    assert items.loc[0, "engagement"] == 88
+    assert statuses.loc[0, "detail"] == "1 rows after filters"
 
 
 def test_fetch_gdelt_reports_rate_limit() -> None:

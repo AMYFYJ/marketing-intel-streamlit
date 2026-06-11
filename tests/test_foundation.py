@@ -181,3 +181,101 @@ def test_top_movers_rank_by_absolute_delta() -> None:
 
     assert len(movers) <= 5
     assert movers["abs_delta"].is_monotonic_decreasing
+
+
+def test_demand_language_playbook_prioritizes_actionable_phrases() -> None:
+    demand_pulse = importlib.import_module("features.demand_pulse")
+    frame = pd.DataFrame(
+        [
+            {
+                "priority": "Medium",
+                "recommended_action": "Content idea",
+                "keyword": "retail media",
+                "intent": "Pain",
+                "audience_language": "Retail media attribution feels expensive and hard to trust",
+                "urgency_score": 92.0,
+                "freshness_hours": 2.0,
+                "noise_risk": "Low",
+                "source": "Reddit",
+                "url": "https://example.com/pain",
+            },
+            {
+                "priority": "High",
+                "recommended_action": "Test now",
+                "keyword": "AI marketing",
+                "intent": "Question",
+                "audience_language": "How should teams use AI marketing without workflow problems?",
+                "urgency_score": 78.0,
+                "freshness_hours": 4.0,
+                "noise_risk": "Low",
+                "source": "GDELT",
+                "url": "https://example.com/question",
+            },
+        ]
+    )
+
+    playbook = demand_pulse._build_language_playbook(frame, limit=2)
+
+    assert list(playbook.columns) == [
+        "Priority",
+        "Action",
+        "Keyword",
+        "Intent",
+        "Reusable phrase",
+        "Recommended use",
+        "Urgency",
+        "Noise risk",
+        "Source",
+        "URL",
+    ]
+    assert playbook.loc[0, "Action"] == "Test now"
+    assert playbook.loc[0, "Recommended use"] == "How-to or FAQ hook"
+
+
+def test_demand_language_snapshot_uses_question_mark_fallback() -> None:
+    demand_pulse = importlib.import_module("features.demand_pulse")
+    phrase = "How should teams use AI marketing without workflow problems?"
+    frame = pd.DataFrame(
+        [
+            {
+                "priority": "High",
+                "recommended_action": "Test now",
+                "keyword": "AI marketing",
+                "intent": "Pain",
+                "audience_language": phrase,
+                "urgency_score": 82.0,
+                "freshness_hours": 1.0,
+                "noise_risk": "Low",
+                "source": "GDELT",
+                "url": "https://example.com/question",
+            }
+        ]
+    )
+
+    snapshot = demand_pulse._language_snapshot(frame)
+
+    assert snapshot[2][1] == phrase
+
+
+def test_demand_pulse_simplified_controls_and_help_coverage() -> None:
+    demand_pulse = importlib.import_module("features.demand_pulse")
+    expected_cards = {
+        "Active keywords",
+        "Source coverage",
+        "Rising topic",
+        "Urgency score",
+        "Sentiment shift",
+        "Audience language",
+        "Next move",
+        "Noise risk",
+    }
+
+    assert demand_pulse._time_window_days("Past 48 hours") == 2
+    assert demand_pulse._time_window_days("Unknown") == 7
+    assert demand_pulse.DEFAULT_MAX_ITEMS_PER_SOURCE == 20
+    assert set(demand_pulse.DEMAND_BRIEF_HELP) == expected_cards
+    assert all(demand_pulse.DEMAND_BRIEF_HELP.values())
+    assert "Velocity by Keyword" in demand_pulse.CHART_HELP
+    assert "Raw Signal Feed" in demand_pulse.CHART_HELP
+    assert demand_pulse._safe_external_url("https://example.com/path") == "https://example.com/path"
+    assert demand_pulse._safe_external_url("javascript:alert(1)") == "#"

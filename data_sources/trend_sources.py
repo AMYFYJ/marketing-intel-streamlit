@@ -42,30 +42,55 @@ def fetch_demand_pulse(
     sources: tuple[str, ...] = ("GDELT", "Reddit"),
     youtube_api_key: str | None = None,
     data_dir: str | Path = "data",
+    now: pd.Timestamp | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     frames: list[pd.DataFrame] = []
     statuses: list[dict[str, str]] = []
+    current_time = _coerce_utc_timestamp(now)
 
     for keyword in query.keywords:
         if "GDELT" in sources:
-            frame, status = fetch_gdelt(keyword, query.max_items_per_source)
+            frame, status = fetch_gdelt(
+                keyword,
+                query.max_items_per_source,
+                lookback_days=query.lookback_days,
+                now=current_time,
+            )
             frames.append(frame)
             statuses.append(status)
         if "Reddit" in sources:
-            frame, status = fetch_reddit(keyword, query.max_items_per_source, query.lookback_days)
+            frame, status = fetch_reddit(keyword, query.max_items_per_source, query.lookback_days, now=current_time)
             frames.append(frame)
             statuses.append(status)
         if "YouTube" in sources:
-            frame, status = fetch_youtube(keyword, youtube_api_key, query.max_items_per_source)
+            frame, status = fetch_youtube(
+                keyword,
+                youtube_api_key,
+                query.max_items_per_source,
+                lookback_days=query.lookback_days,
+                now=current_time,
+            )
             frames.append(frame)
             statuses.append(status)
 
     if "Google Trends export" in sources:
-        frame, status = load_trends_export(Path(data_dir) / "google_trends_export.csv", "Google Trends export")
+        frame, status = load_trends_export(
+            Path(data_dir) / "google_trends_export.csv",
+            "Google Trends export",
+            keywords=query.keywords,
+            lookback_days=query.lookback_days,
+            now=current_time,
+        )
         frames.append(frame)
         statuses.append(status)
     if "Pinterest export" in sources:
-        frame, status = load_trends_export(Path(data_dir) / "pinterest_trends_export.csv", "Pinterest export")
+        frame, status = load_trends_export(
+            Path(data_dir) / "pinterest_trends_export.csv",
+            "Pinterest export",
+            keywords=query.keywords,
+            lookback_days=query.lookback_days,
+            now=current_time,
+        )
         frames.append(frame)
         statuses.append(status)
 
@@ -73,13 +98,21 @@ def fetch_demand_pulse(
     combined = pd.concat(non_empty_frames, ignore_index=True) if non_empty_frames else empty_trend_frame()
     if not combined.empty:
         combined["published_at"] = pd.to_datetime(combined["published_at"], errors="coerce", utc=True)
+        combined = _filter_by_lookback(combined, query.lookback_days, current_time)
         combined["sentiment"] = combined.apply(lambda row: sentiment_score(f"{row['title']} {row['snippet']}"), axis=1)
-        combined["recency_hours"] = (pd.Timestamp.now(tz="UTC") - combined["published_at"]).dt.total_seconds() / 3600
+        combined["recency_hours"] = (current_time - combined["published_at"]).dt.total_seconds() / 3600
         combined["recency_hours"] = combined["recency_hours"].clip(lower=0).fillna(query.lookback_days * 24)
     return combined, pd.DataFrame(statuses)
 
 
-def fetch_gdelt(keyword: str, max_records: int = 25, request_get: Callable[..., object] = requests.get) -> tuple[pd.DataFrame, dict[str, str]]:
+def fetch_gdelt(
+    keyword: str,
+    max_records: int = 25,
+    request_get: Callable[..., object] = requests.get,
+    lookback_days: int = 7,
+    now: pd.Timestamp | None = None,
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    current_time = _coerce_utc_timestamp(now)
     url = "https://api.gdeltproject.org/api/v2/doc/doc"
     params = {
         "query": keyword,
@@ -87,6 +120,8 @@ def fetch_gdelt(keyword: str, max_records: int = 25, request_get: Callable[..., 
         "format": "json",
         "maxrecords": max_records,
         "sort": "HybridRel",
+        "startdatetime": _gdelt_datetime(_lookback_cutoff(lookback_days, current_time)),
+        "enddatetime": _gdelt_datetime(current_time),
     }
     try:
         response = request_get(url, params=params, timeout=12)
@@ -185,9 +220,16 @@ def build_daily_series(items: pd.DataFrame, lookback_days: int = 7) -> pd.DataFr
     return grouped[["date", "keyword", "volume", "norm"]].sort_values(["keyword", "date"]).reset_index(drop=True)
 
 
-def fetch_reddit(keyword: str, max_records: int = 25, lookback_days: int = 7) -> tuple[pd.DataFrame, dict[str, str]]:
+def fetch_reddit(
+    keyword: str,
+    max_records: int = 25,
+    lookback_days: int = 7,
+    now: pd.Timestamp | None = None,
+) -> tuple[pd.DataFrame, dict[str, str]]:
     encoded = quote_plus(keyword)
-    url = f"https://www.reddit.com/search.rss?q={encoded}&sort=new&t=week"
+    current_time = _coerce_utc_timestamp(now)
+    cutoff = _lookback_cutoff(lookback_days, current_time)
+    url = f"https://www.reddit.com/search.rss?q={encoded}&sort=new&t={_reddit_time_window(lookback_days)}"
     try:
         feed = feedparser.parse(url, request_headers={"User-Agent": "marketing-intel-streamlit/1.0"})
         entries = feed.entries[:max_records]
@@ -196,13 +238,16 @@ def fetch_reddit(keyword: str, max_records: int = 25, lookback_days: int = 7) ->
 
     rows = []
     for entry in entries:
+        published_at = _parse_struct_time(entry.get("published_parsed"))
+        if published_at < cutoff:
+            continue
         rows.append(
             {
                 "source": "Reddit",
                 "keyword": keyword,
                 "title": entry.get("title", "Untitled Reddit post"),
                 "url": entry.get("link", ""),
-                "published_at": _parse_struct_time(entry.get("published_parsed")),
+                "published_at": published_at,
                 "snippet": _strip_html(entry.get("summary", ""))[:350],
                 "author": entry.get("author", ""),
                 "engagement": float(entry.get("score", 0) or 0),
@@ -211,9 +256,17 @@ def fetch_reddit(keyword: str, max_records: int = 25, lookback_days: int = 7) ->
     return pd.DataFrame(rows, columns=empty_trend_frame().columns), _status("Reddit", keyword, "ok", f"{len(rows)} posts")
 
 
-def fetch_youtube(keyword: str, api_key: str | None, max_records: int = 25, request_get: Callable[..., object] = requests.get) -> tuple[pd.DataFrame, dict[str, str]]:
+def fetch_youtube(
+    keyword: str,
+    api_key: str | None,
+    max_records: int = 25,
+    request_get: Callable[..., object] = requests.get,
+    lookback_days: int = 7,
+    now: pd.Timestamp | None = None,
+) -> tuple[pd.DataFrame, dict[str, str]]:
     if not api_key:
         return empty_trend_frame(), _status("YouTube", keyword, "not configured", "Set YOUTUBE_API_KEY in Streamlit secrets")
+    current_time = _coerce_utc_timestamp(now)
     url = "https://www.googleapis.com/youtube/v3/search"
     params = {
         "part": "snippet",
@@ -221,6 +274,7 @@ def fetch_youtube(keyword: str, api_key: str | None, max_records: int = 25, requ
         "type": "video",
         "order": "date",
         "maxResults": min(max_records, 50),
+        "publishedAfter": _youtube_datetime(_lookback_cutoff(lookback_days, current_time)),
         "key": api_key,
     }
     try:
@@ -249,9 +303,16 @@ def fetch_youtube(keyword: str, api_key: str | None, max_records: int = 25, requ
     return pd.DataFrame(rows, columns=empty_trend_frame().columns), _status("YouTube", keyword, "ok", f"{len(rows)} videos")
 
 
-def load_trends_export(path: Path, source_name: str) -> tuple[pd.DataFrame, dict[str, str]]:
+def load_trends_export(
+    path: Path,
+    source_name: str,
+    keywords: tuple[str, ...] | None = None,
+    lookback_days: int | None = None,
+    now: pd.Timestamp | None = None,
+) -> tuple[pd.DataFrame, dict[str, str]]:
     if not path.exists():
         return empty_trend_frame(), _status(source_name, "export", "not configured", f"Missing {path}")
+    current_time = _coerce_utc_timestamp(now)
     raw = pd.read_csv(path)
     columns = {column.lower().strip().replace(" ", "_"): column for column in raw.columns}
     keyword_col = columns.get("keyword") or columns.get("query") or columns.get("term")
@@ -273,7 +334,13 @@ def load_trends_export(path: Path, source_name: str) -> tuple[pd.DataFrame, dict
                 "engagement": float(row[value_col]) if value_col else 0.0,
             }
         )
-    return pd.DataFrame(rows, columns=empty_trend_frame().columns), _status(source_name, "export", "ok", f"{len(rows)} rows")
+    frame = pd.DataFrame(rows, columns=empty_trend_frame().columns)
+    if keywords:
+        selected = {keyword.lower() for keyword in keywords}
+        frame = frame[frame["keyword"].astype(str).str.lower().isin(selected)].copy()
+    if lookback_days is not None:
+        frame = _filter_by_lookback(frame, lookback_days, current_time)
+    return frame.reset_index(drop=True), _status(source_name, "export", "ok", f"{len(frame)} rows after filters")
 
 
 def compute_trend_summary(items: pd.DataFrame) -> pd.DataFrame:
@@ -351,6 +418,50 @@ def _parse_struct_time(value: object) -> pd.Timestamp:
     if not value:
         return pd.Timestamp.now(tz="UTC")
     return pd.Timestamp(datetime(*value[:6], tzinfo=timezone.utc))
+
+
+def _coerce_utc_timestamp(value: pd.Timestamp | None) -> pd.Timestamp:
+    if value is None:
+        return pd.Timestamp.now(tz="UTC")
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
+def _lookback_cutoff(lookback_days: int, now: pd.Timestamp) -> pd.Timestamp:
+    days = max(int(lookback_days), 1)
+    return now - pd.Timedelta(days=days)
+
+
+def _filter_by_lookback(frame: pd.DataFrame, lookback_days: int, now: pd.Timestamp) -> pd.DataFrame:
+    if frame.empty:
+        return frame.copy()
+    df = frame.copy()
+    df["published_at"] = pd.to_datetime(df["published_at"], errors="coerce", utc=True).fillna(now)
+    return df[df["published_at"] >= _lookback_cutoff(lookback_days, now)].reset_index(drop=True)
+
+
+def _gdelt_datetime(value: pd.Timestamp) -> str:
+    timestamp = _coerce_utc_timestamp(value)
+    return timestamp.strftime("%Y%m%d%H%M%S")
+
+
+def _youtube_datetime(value: pd.Timestamp) -> str:
+    timestamp = _coerce_utc_timestamp(value)
+    return timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _reddit_time_window(lookback_days: int) -> str:
+    if lookback_days <= 1:
+        return "day"
+    if lookback_days <= 7:
+        return "week"
+    if lookback_days <= 30:
+        return "month"
+    if lookback_days <= 365:
+        return "year"
+    return "all"
 
 
 def _strip_html(value: str) -> str:

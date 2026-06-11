@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -21,6 +23,49 @@ from data_sources.trend_sources import (
     fetch_gdelt_timeline,
     parse_keywords,
 )
+
+SOURCES = ["GDELT", "Reddit", "YouTube", "Google Trends export", "Pinterest export"]
+DEFAULT_SOURCES = ["GDELT", "Reddit"]
+TIME_WINDOW_OPTIONS = {
+    "Past 48 hours": 2,
+    "Past week": 7,
+    "Past 14 days": 14,
+    "Past 30 days": 30,
+}
+DEFAULT_TIME_WINDOW = "Past week"
+DEFAULT_MAX_ITEMS_PER_SOURCE = 20
+ACTION_ORDER = {"Test now": 0, "Content idea": 1, "Monitor": 2, "Ignore/noisy": 3, "Fix source": 4}
+NOISE_ORDER = {"Low": 0, "Medium": 1, "High": 2}
+LANGUAGE_USE_CASES = {
+    "Pain": "Objection-handling copy",
+    "Question": "How-to or FAQ hook",
+    "Comparison": "Comparison ad angle",
+    "Purchase research": "Offer or landing-page copy",
+    "General mention": "Trend headline",
+}
+DEMAND_BRIEF_HELP = {
+    "Active keywords": "Distinct keywords with usable demand signals after parsing and filtering.",
+    "Source coverage": "Selected public sources that returned usable results. Gaps usually mean missing API setup, missing exports, rate limits, or request failures.",
+    "Rising topic": "Keyword with the strongest average urgency score, weighted toward fresh and specific signals.",
+    "Urgency score": "0-100 directional score blending freshness, source confidence, engagement, keyword velocity, sentiment intensity, intent specificity, and noise risk.",
+    "Sentiment shift": "Average simple positive-minus-negative language signal across the visible items. Use it as a tone check, not a brand-lift measure.",
+    "Audience language": "The strongest phrase or question to reuse carefully in hooks, landing pages, FAQs, or sales enablement.",
+    "Next move": "Highest-priority workflow recommendation across the visible signals: test, create content, monitor, ignore noise, or fix a source.",
+    "Noise risk": "Count of broad or low-specificity signals that may not be useful enough for campaign planning.",
+}
+CHART_HELP = {
+    "Velocity by Keyword": "Compares demand momentum by keyword and source. Recent items count more than older items.",
+    "Sentiment vs Volume": "Shows which keywords have enough signal volume and whether public language is positive, negative, or neutral.",
+    "Keyword + Source Heatmap": "Shows where urgency is concentrated by keyword and source so you can spot coverage gaps or strong channels.",
+    "Freshness Distribution": "Shows how recent the visible signals are and which actions they map to.",
+    "Action Studio": "Filters demand signals into exportable campaign briefs. Start broad, then tighten by action, intent, noise risk, or urgency.",
+    "Exportable Campaign Briefs": "Downloadable action rows summarizing hook, rationale, keyword, intent, and representative source URL.",
+    "Audience Language Workbench": "Ranks reusable customer language so copywriters and campaign owners can turn demand signals into hooks.",
+    "Signal Phrase Feed": "Raw phrase-level view of audience language, hooks, urgency, noise, and source URLs.",
+    "Intent Mix": "Shows whether demand is mostly pain, questions, comparisons, purchase research, or general mentions.",
+    "Source Status": "Explains which selected sources worked and which need setup or broader queries.",
+    "Raw Signal Feed": "Most recent enriched demand signals before they are grouped into briefs or language playbooks.",
+}
 
 _LIFECYCLE_BADGE = {
     "Accelerating": "🚀",
@@ -82,7 +127,7 @@ def render() -> None:
             "Lookback days",
             min_value=1,
             max_value=30,
-            value=7,
+            value=TIME_WINDOW_OPTIONS[DEFAULT_TIME_WINDOW],
             help=(
                 "How many recent days count as the 'current window'. This window is what momentum and "
                 "the baseline comparison are measured over — a shorter window reacts faster but is noisier; "
@@ -93,7 +138,7 @@ def render() -> None:
             "Items per source",
             min_value=5,
             max_value=50,
-            value=20,
+            value=DEFAULT_MAX_ITEMS_PER_SOURCE,
             step=5,
             help=(
                 "Maximum item-level signals (articles, posts, videos) pulled from each source. Higher "
@@ -102,8 +147,8 @@ def render() -> None:
         )
         sources = st.multiselect(
             "Sources",
-            ["GDELT", "Reddit", "YouTube", "Google Trends export", "Pinterest export"],
-            default=["GDELT", "Reddit"],
+            SOURCES,
+            default=DEFAULT_SOURCES,
             help=(
                 "Which channels to listen to. More independent sources raise signal confidence "
                 "(corroboration). GDELT (news) and Reddit (social) need no API key; YouTube needs "
@@ -346,6 +391,113 @@ def _render_items(items: pd.DataFrame) -> None:
         return
     display = items.sort_values("published_at", ascending=False)[["source", "keyword", "title", "author", "published_at", "sentiment", "url"]].head(250)
     st.dataframe(display, use_container_width=True, hide_index=True)
+
+
+def _time_window_days(label: str) -> int:
+    return int(TIME_WINDOW_OPTIONS.get(label, TIME_WINDOW_OPTIONS[DEFAULT_TIME_WINDOW]))
+
+
+def _safe_external_url(value: object) -> str:
+    text = str(value).strip()
+    parsed = urlparse(text)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return text
+    return "#"
+
+
+def _language_snapshot(items: pd.DataFrame) -> list[tuple[str, str, str]]:
+    if items.empty:
+        return [
+            ("Strongest phrase", "No phrase available", "Refresh or broaden keywords."),
+            ("Pain language", "No objection language found", "Watch for pain-heavy signals."),
+            ("Question hook", "No question language found", "Look for how-to demand."),
+        ]
+
+    ordered = _rank_language_items(items)
+    strongest = ordered.iloc[0]
+    pain = _first_matching_phrase(ordered, "Pain")
+    question = _first_matching_phrase(ordered, "Question")
+    return [
+        (
+            "Strongest phrase",
+            str(strongest["audience_language"]),
+            f"{strongest['keyword']} - {strongest['recommended_action']}",
+        ),
+        ("Pain language", pain, "Use for objection-handling copy."),
+        ("Question hook", question, "Use for how-to, FAQ, or search-led creative."),
+    ]
+
+
+def _build_language_playbook(items: pd.DataFrame, limit: int = 12) -> pd.DataFrame:
+    columns = ["Priority", "Action", "Keyword", "Intent", "Reusable phrase", "Recommended use", "Urgency", "Noise risk", "Source", "URL"]
+    if items.empty:
+        return pd.DataFrame(columns=columns)
+
+    ranked = _rank_language_items(items)
+    ranked = ranked[ranked["audience_language"].astype(str).str.strip().ne("")]
+    if ranked.empty:
+        return pd.DataFrame(columns=columns)
+
+    selected = ranked.head(limit).copy()
+    urgency = pd.to_numeric(selected["urgency_score"], errors="coerce").fillna(0).round().astype(int)
+    return pd.DataFrame(
+        {
+            "Priority": selected["priority"].astype(str),
+            "Action": selected["recommended_action"].astype(str),
+            "Keyword": selected["keyword"].astype(str),
+            "Intent": selected["intent"].astype(str),
+            "Reusable phrase": selected["audience_language"].astype(str),
+            "Recommended use": selected.apply(_language_use_case, axis=1),
+            "Urgency": urgency,
+            "Noise risk": selected["noise_risk"].astype(str),
+            "Source": selected["source"].astype(str),
+            "URL": selected["url"].astype(str),
+        }
+    )
+
+
+def _rank_language_items(items: pd.DataFrame) -> pd.DataFrame:
+    df = items.copy()
+    defaults = {
+        "priority": "Low",
+        "recommended_action": "Monitor",
+        "keyword": "",
+        "intent": "General mention",
+        "audience_language": "",
+        "urgency_score": 0.0,
+        "freshness_hours": 168.0,
+        "noise_risk": "Medium",
+        "source": "",
+        "url": "",
+    }
+    for column, default in defaults.items():
+        if column not in df:
+            df[column] = default
+    df["action_rank"] = df["recommended_action"].map(ACTION_ORDER).fillna(5)
+    df["noise_rank"] = df["noise_risk"].map(NOISE_ORDER).fillna(3)
+    df["urgency_numeric"] = pd.to_numeric(df["urgency_score"], errors="coerce").fillna(0)
+    df["freshness_numeric"] = pd.to_numeric(df["freshness_hours"], errors="coerce").fillna(168)
+    return df.sort_values(
+        ["action_rank", "noise_rank", "urgency_numeric", "freshness_numeric"],
+        ascending=[True, True, False, True],
+    ).reset_index(drop=True)
+
+
+def _first_matching_phrase(items: pd.DataFrame, intent: str) -> str:
+    match = items[items["intent"].eq(intent)]
+    if match.empty and intent == "Question":
+        match = items[items["audience_language"].astype(str).str.contains("?", regex=False, na=False)]
+    if match.empty:
+        return f"No {intent.lower()} language found"
+    return str(match.iloc[0]["audience_language"])
+
+
+def _language_use_case(row: pd.Series) -> str:
+    if row.get("recommended_action") == "Fix source":
+        return "Fix source coverage first"
+    if row.get("noise_risk") == "High":
+        return "Hold until the signal is more specific"
+    return LANGUAGE_USE_CASES.get(str(row.get("intent")), "Trend headline")
 
 
 def _get_secret(name: str) -> str | None:
