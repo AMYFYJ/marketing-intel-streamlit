@@ -332,28 +332,93 @@ def summarize_metrics(frame: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def add_recommendations(frame: pd.DataFrame) -> pd.DataFrame:
-    df = frame.copy()
-    platform_median_cpa = df.groupby("platform")["cpa"].transform("median").replace(0, np.nan)
-    conditions = [
-        (df["roas"] >= 3.0) & (df["profit"] > 0),
-        (df["roas"] >= 1.5) & (df["cpa"] <= platform_median_cpa.fillna(df["cpa"].median()) * 1.15),
-        (df["roas"] < 0.8) | (df["profit"] < 0),
+def aggregate_campaigns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Roll campaign-day rows up to one row per campaign over the given range."""
+    attribute_columns = [
+        "campaign_name",
+        "platform",
+        "objective",
+        "industry",
+        "audience_segment",
+        "device",
+        "creative_format",
+        "placement",
+        "geo",
+        "budget_tier",
     ]
-    choices = ["Scale", "Watch", "Pause"]
-    df["recommendation"] = np.select(conditions, choices, default="Optimize")
+    present = [column for column in attribute_columns if column in frame.columns]
+    aggregated = frame.groupby("campaign_id", as_index=False).agg(
+        **{column: (column, "first") for column in present},
+        date=("date", "max"),
+        days_active=("date", "nunique"),
+        spend=("spend", "sum"),
+        impressions=("impressions", "sum"),
+        clicks=("clicks", "sum"),
+        conversions=("conversions", "sum"),
+        revenue=("revenue", "sum"),
+    )
+    return recompute_metrics(aggregated)
+
+
+def add_recommendations(frame: pd.DataFrame) -> pd.DataFrame:
+    """Label campaigns relative to their platform's median ROAS so each class stays informative."""
+    df = frame.copy()
+    platform_median_roas = df.groupby("platform")["roas"].transform("median").replace(0, np.nan)
+    platform_median_roas = platform_median_roas.fillna(df["roas"].median())
+    relative_roas = df["roas"] / platform_median_roas
+    material_spend = df["spend"] >= df["spend"].median()
+    conditions = [
+        (relative_roas >= 1.3) & (df["profit"] > 0),
+        (relative_roas < 0.7) & (material_spend | (df["profit"] < 0)),
+        relative_roas < 1.0,
+    ]
+    choices = ["Scale", "Pause", "Optimize"]
+    df["recommendation"] = np.select(conditions, choices, default="Watch")
     return df
 
 
-def detect_anomalies(frame: pd.DataFrame) -> pd.DataFrame:
+def detect_anomalies(frame: pd.DataFrame, z_threshold: float = 3.5) -> pd.DataFrame:
+    """Flag metric outliers with direction and the offending metric.
+
+    Each row is compared against its own campaign's history when campaigns span
+    multiple rows (the persistent demo data), otherwise against its platform
+    cross-section (single-snapshot uploads).
+    """
     df = frame.copy()
-    flags = pd.Series(False, index=df.index)
+    if df.empty:
+        df["anomaly"] = pd.Series(dtype=bool)
+        df["anomaly_metric"] = pd.Series(dtype=str)
+        df["anomaly_direction"] = pd.Series(dtype=str)
+        return df
+
+    rows_per_campaign = df.groupby("campaign_id")["campaign_id"].transform("size") if "campaign_id" in df.columns else pd.Series(1, index=df.index)
+    key = df["campaign_id"] if float(rows_per_campaign.median()) >= 8 else df["platform"]
+
+    worst_abs_z = pd.Series(0.0, index=df.index)
+    worst_metric = pd.Series("", index=df.index)
+    worst_signed_z = pd.Series(0.0, index=df.index)
     for metric in ["cpa", "roas", "ctr", "cvr"]:
-        med = df.groupby("platform")[metric].transform("median")
-        mad = (df[metric] - med).abs().groupby(df["platform"]).transform("median").replace(0, np.nan)
-        robust_z = ((df[metric] - med).abs() / mad).replace([np.inf, -np.inf], np.nan).fillna(0)
-        flags = flags | (robust_z > 5.0)
-    df["anomaly"] = flags
+        values = df[metric]
+        if metric == "cpa":
+            # CPA is 0 on zero-conversion days; mask it so those days are not "favorable" outliers.
+            values = values.where(df["conversions"] > 0)
+        med = values.groupby(key).transform("median")
+        mad = (values - med).abs().groupby(key).transform("median").replace(0, np.nan)
+        z = ((values - med) / (1.4826 * mad)).replace([np.inf, -np.inf], np.nan).fillna(0)
+        better = z.abs() > worst_abs_z
+        worst_abs_z = worst_abs_z.where(~better, z.abs())
+        worst_metric = worst_metric.where(~better, metric)
+        worst_signed_z = worst_signed_z.where(~better, z)
+
+    df["anomaly"] = worst_abs_z > z_threshold
+    df["anomaly_metric"] = worst_metric.where(df["anomaly"], "")
+    higher_is_better = worst_metric != "cpa"
+    favorable = (worst_signed_z > 0) == higher_is_better
+    df["anomaly_direction"] = np.select(
+        [df["anomaly"] & favorable, df["anomaly"] & ~favorable],
+        ["Favorable", "Unfavorable"],
+        default="",
+    )
     return df
 
 

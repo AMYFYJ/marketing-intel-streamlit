@@ -5,6 +5,7 @@ import pandas as pd
 from data_sources.campaign_data import (
     CampaignFilters,
     add_recommendations,
+    aggregate_campaigns,
     detect_anomalies,
     filter_campaigns,
     generate_campaign_sample,
@@ -99,3 +100,34 @@ def test_recommendations_and_anomaly_columns_are_added() -> None:
 
     assert set(recommended["recommendation"].unique()).issubset({"Scale", "Watch", "Optimize", "Pause"})
     assert recommended["anomaly"].dtype == bool
+    assert {"anomaly_metric", "anomaly_direction"}.issubset(recommended.columns)
+
+
+def test_recommendations_stay_informative_at_campaign_level() -> None:
+    frame = generate_campaign_sample(rows=30_000, seed=42)
+    campaigns = add_recommendations(aggregate_campaigns(frame))
+    shares = campaigns["recommendation"].value_counts(normalize=True)
+
+    # No single class should dominate, otherwise the recommendation carries no signal.
+    assert shares.max() <= 0.5
+    assert len(shares) >= 3
+
+
+def test_aggregate_campaigns_rolls_up_to_one_row_per_campaign() -> None:
+    frame = generate_campaign_sample(rows=5_000, seed=11)
+    campaigns = aggregate_campaigns(frame)
+
+    assert len(campaigns) == frame["campaign_id"].nunique()
+    assert campaigns["campaign_id"].is_unique
+    assert campaigns["days_active"].ge(1).all()
+    assert abs(campaigns["spend"].sum() - frame["spend"].sum()) < 1e-6
+
+
+def test_detect_anomalies_flags_directional_outliers_sparingly() -> None:
+    frame = generate_campaign_sample(rows=30_000, seed=42)
+    flagged = detect_anomalies(frame)
+    anomalies = flagged[flagged["anomaly"]]
+
+    assert 0 < len(anomalies) / len(flagged) < 0.10
+    assert set(anomalies["anomaly_direction"].unique()).issubset({"Favorable", "Unfavorable"})
+    assert set(anomalies["anomaly_metric"].unique()).issubset({"cpa", "roas", "ctr", "cvr"})

@@ -8,6 +8,7 @@ from data_sources.campaign_data import (
     CampaignFilters,
     KAGGLE_DATASET_URL,
     add_recommendations,
+    aggregate_campaigns,
     detect_anomalies,
     filter_campaigns,
     load_campaign_data,
@@ -15,6 +16,20 @@ from data_sources.campaign_data import (
     to_tuple,
     unique_sorted,
 )
+from utils.formatting import format_currency, format_pct, format_roas
+
+RECOMMENDATION_COLORS = {"Scale": "#2ca02c", "Watch": "#f0ad4e", "Optimize": "#1f77b4", "Pause": "#d62728"}
+GRANULARITY_FREQ = {"Daily": "D", "Weekly": "W", "Monthly": "ME"}
+
+CAMPAIGN_TABLE_COLUMN_CONFIG = {
+    "spend": st.column_config.NumberColumn("spend", format="dollar"),
+    "revenue": st.column_config.NumberColumn("revenue", format="dollar"),
+    "profit": st.column_config.NumberColumn("profit", format="dollar"),
+    "cpa": st.column_config.NumberColumn("cpa", format="dollar"),
+    "roas": st.column_config.NumberColumn("roas", format="%.2fx"),
+    "ctr": st.column_config.NumberColumn("ctr", format="percent"),
+    "cvr": st.column_config.NumberColumn("cvr", format="percent"),
+}
 
 
 @st.cache_data(show_spinner=False)
@@ -43,11 +58,13 @@ def render() -> None:
         st.warning("No campaigns match the current filters. Broaden the selection to restore the dashboard.")
         return
 
-    recommended = add_recommendations(detect_anomalies(filtered))
-    metrics = summarize_metrics(recommended)
-    _render_kpis(metrics)
-    _render_charts(recommended)
-    _render_campaign_tables(recommended)
+    campaign_level = add_recommendations(aggregate_campaigns(filtered))
+    flagged_days = detect_anomalies(filtered)
+
+    _render_kpis(data, filters, filtered)
+    _render_charts(filtered, campaign_level)
+    _render_campaign_table(campaign_level)
+    _render_anomaly_watchlist(flagged_days)
 
 
 def _render_filters(data: pd.DataFrame) -> CampaignFilters:
@@ -60,6 +77,7 @@ def _render_filters(data: pd.DataFrame) -> CampaignFilters:
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
     else:
+        st.warning("Select both a start and an end date — showing the full range until then.")
         start_date, end_date = min_date, max_date
 
     with right:
@@ -84,44 +102,111 @@ def _render_filters(data: pd.DataFrame) -> CampaignFilters:
     )
 
 
-def _render_kpis(metrics: dict[str, float]) -> None:
+def _previous_period_metrics(data: pd.DataFrame, filters: CampaignFilters) -> dict[str, float] | None:
+    """Metrics for the window of equal length immediately before the selected range."""
+    if filters.start_date is None or filters.end_date is None:
+        return None
+    span = filters.end_date - filters.start_date
+    prev_end = filters.start_date - pd.Timedelta(days=1)
+    prev_start = prev_end - span
+    if prev_end < data["date"].min():
+        return None
+    previous = filter_campaigns(
+        data,
+        CampaignFilters(
+            start_date=prev_start,
+            end_date=prev_end,
+            platforms=filters.platforms,
+            objectives=filters.objectives,
+            industries=filters.industries,
+            devices=filters.devices,
+            creative_formats=filters.creative_formats,
+            budget_tiers=filters.budget_tiers,
+        ),
+    )
+    if previous.empty:
+        return None
+    return summarize_metrics(previous)
+
+
+def _render_kpis(data: pd.DataFrame, filters: CampaignFilters, filtered: pd.DataFrame) -> None:
+    metrics = summarize_metrics(filtered)
+    previous = _previous_period_metrics(data, filters)
+
+    def delta(key: str, formatter) -> str | None:
+        if previous is None:
+            return None
+        return formatter(metrics[key] - previous[key])
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Spend", _currency(metrics["spend"]))
-    c2.metric("Revenue", _currency(metrics["revenue"]))
-    c3.metric("Profit", _currency(metrics["profit"]))
-    c4.metric("ROAS", f"{metrics['roas']:.2f}x")
+    c1.metric("Spend", format_currency(metrics["spend"]), delta=delta("spend", format_currency))
+    c2.metric("Revenue", format_currency(metrics["revenue"]), delta=delta("revenue", format_currency))
+    c3.metric("Profit", format_currency(metrics["profit"]), delta=delta("profit", format_currency))
+    c4.metric("ROAS", format_roas(metrics["roas"]), delta=delta("roas", lambda v: f"{v:+.2f}x"))
     c5, c6, c7, c8 = st.columns(4)
-    c5.metric("CPA", _currency(metrics["cpa"]))
-    c6.metric("CTR", _pct(metrics["ctr"]))
-    c7.metric("CVR", _pct(metrics["cvr"]))
-    c8.metric("Conversions", f"{metrics['conversions']:,.0f}")
+    c5.metric("CPA", format_currency(metrics["cpa"]), delta=delta("cpa", format_currency), delta_color="inverse")
+    c6.metric("CTR", format_pct(metrics["ctr"]), delta=delta("ctr", lambda v: f"{v * 100:+.2f}pp"))
+    c7.metric("CVR", format_pct(metrics["cvr"]), delta=delta("cvr", lambda v: f"{v * 100:+.2f}pp"))
+    c8.metric("Conversions", f"{metrics['conversions']:,.0f}", delta=delta("conversions", lambda v: f"{v:+,.0f}"))
+    if previous is not None:
+        st.caption("Deltas compare against the preceding period of equal length with the same filters.")
 
 
-def _render_charts(frame: pd.DataFrame) -> None:
+def _render_charts(frame: pd.DataFrame, campaign_level: pd.DataFrame) -> None:
     st.markdown("#### Performance Trends")
-    daily = frame.groupby("date", as_index=False)[["spend", "revenue", "profit", "conversions"]].sum()
-    daily_long = daily.melt(id_vars="date", value_vars=["spend", "revenue", "profit"], var_name="metric", value_name="value")
-    st.plotly_chart(px.line(daily_long, x="date", y="value", color="metric", title="Spend, revenue, and profit over time"), use_container_width=True)
+    granularity = st.radio("Granularity", list(GRANULARITY_FREQ), index=1, horizontal=True, label_visibility="collapsed")
+    freq = GRANULARITY_FREQ[granularity]
+    trend = (
+        frame.set_index("date")[["spend", "revenue", "profit"]]
+        .resample(freq)
+        .sum()
+        .reset_index()
+    )
+    trend["roas"] = (trend["revenue"] / trend["spend"].replace(0, pd.NA)).astype(float)
+    if granularity == "Daily":
+        trend[["spend", "revenue", "profit"]] = trend[["spend", "revenue", "profit"]].rolling(7, min_periods=1).mean()
+        trend["roas"] = trend["roas"].rolling(7, min_periods=1).mean()
 
     c1, c2 = st.columns(2)
-    platform = frame.groupby("platform", as_index=False).agg(spend=("spend", "sum"), revenue=("revenue", "sum"), profit=("profit", "sum"), roas=("roas", "mean"))
-    c1.plotly_chart(px.bar(platform.sort_values("profit"), x="platform", y="profit", color="roas", title="Profit by platform"), use_container_width=True)
+    money_long = trend.melt(id_vars="date", value_vars=["spend", "revenue", "profit"], var_name="metric", value_name="value")
+    money_title = "Spend, revenue, and profit" + (" (7-day rolling avg)" if granularity == "Daily" else "")
+    c1.plotly_chart(px.line(money_long, x="date", y="value", color="metric", title=money_title), use_container_width=True)
+    c2.plotly_chart(px.line(trend, x="date", y="roas", title=f"Blended ROAS ({granularity.lower()})"), use_container_width=True)
 
-    objective = frame.groupby(["objective", "creative_format"], as_index=False).agg(spend=("spend", "sum"), revenue=("revenue", "sum"), cpa=("cpa", "median"), roas=("roas", "mean"))
-    c2.plotly_chart(px.scatter(objective, x="cpa", y="roas", size="spend", color="objective", hover_name="creative_format", title="Objective efficiency map"), use_container_width=True)
+    c3, c4 = st.columns(2)
+    platform = frame.groupby("platform", as_index=False).agg(spend=("spend", "sum"), revenue=("revenue", "sum"), profit=("profit", "sum"))
+    platform["roas"] = platform["revenue"] / platform["spend"].replace(0, pd.NA)
+    c3.plotly_chart(px.bar(platform.sort_values("profit"), x="platform", y="profit", color="roas", title="Profit by platform (color = weighted ROAS)"), use_container_width=True)
 
-    mix = frame.groupby(["platform", "recommendation"], as_index=False).agg(campaigns=("campaign_id", "count"))
-    st.plotly_chart(px.bar(mix, x="platform", y="campaigns", color="recommendation", title="Recommendation mix by platform"), use_container_width=True)
+    objective = campaign_level.groupby(["objective", "creative_format"], as_index=False).agg(
+        spend=("spend", "sum"), revenue=("revenue", "sum"), cpa=("cpa", "median"), roas=("roas", "mean")
+    )
+    c4.plotly_chart(px.scatter(objective, x="cpa", y="roas", size="spend", color="objective", hover_name="creative_format", title="Objective efficiency map"), use_container_width=True)
+
+    mix = campaign_level.groupby(["platform", "recommendation"], as_index=False).agg(campaigns=("campaign_id", "count"))
+    st.plotly_chart(
+        px.bar(mix, x="platform", y="campaigns", color="recommendation", color_discrete_map=RECOMMENDATION_COLORS, title="Recommendation mix by platform (campaigns)"),
+        use_container_width=True,
+    )
 
 
-def _render_campaign_tables(frame: pd.DataFrame) -> None:
+def _render_campaign_table(campaign_level: pd.DataFrame) -> None:
     st.markdown("#### Campaign Actions")
-    ranked = frame.sort_values(["recommendation", "profit", "roas"], ascending=[True, False, False])
+    options = ["Pause", "Optimize", "Watch", "Scale"]
+    selected = st.multiselect("Recommendations", options, default=options, help="Filter the table by recommended action.")
+    table = campaign_level[campaign_level["recommendation"].isin(selected)].copy()
+
+    # Most actionable first: Pause campaigns by spend, then the rest by spend.
+    action_rank = {"Pause": 0, "Optimize": 1, "Watch": 2, "Scale": 3}
+    table["_rank"] = table["recommendation"].map(action_rank)
+    table = table.sort_values(["_rank", "spend"], ascending=[True, False]).drop(columns="_rank")
+
     columns = [
         "campaign_name",
         "platform",
         "objective",
         "industry",
+        "days_active",
         "spend",
         "revenue",
         "profit",
@@ -130,19 +215,34 @@ def _render_campaign_tables(frame: pd.DataFrame) -> None:
         "ctr",
         "cvr",
         "recommendation",
-        "anomaly",
     ]
-    st.dataframe(ranked[columns].head(250), use_container_width=True, hide_index=True)
+    columns = [column for column in columns if column in table.columns]
+    st.dataframe(
+        table[columns],
+        use_container_width=True,
+        hide_index=True,
+        column_config=CAMPAIGN_TABLE_COLUMN_CONFIG,
+    )
+    st.download_button(
+        "Download campaign actions (CSV)",
+        table[columns].to_csv(index=False).encode("utf-8"),
+        file_name="campaign_actions.csv",
+        mime="text/csv",
+    )
 
-    anomalies = frame[frame["anomaly"]].sort_values("spend", ascending=False).head(25)
-    if not anomalies.empty:
-        st.markdown("#### Anomaly Watchlist")
-        st.dataframe(anomalies[columns], use_container_width=True, hide_index=True)
 
-
-def _currency(value: float) -> str:
-    return f"${value:,.0f}"
-
-
-def _pct(value: float) -> str:
-    return f"{value * 100:.2f}%"
+def _render_anomaly_watchlist(flagged_days: pd.DataFrame) -> None:
+    anomalies = flagged_days[flagged_days["anomaly"]]
+    if anomalies.empty:
+        return
+    st.markdown("#### Anomaly Watchlist")
+    st.caption("Campaign-days that deviate sharply from the campaign's own history. Unfavorable rows need attention first.")
+    watchlist = anomalies.sort_values(["date", "spend"], ascending=[False, False]).head(20)
+    columns = ["date", "campaign_name", "platform", "anomaly_metric", "anomaly_direction", "spend", "roas", "cpa", "ctr", "cvr"]
+    columns = [column for column in columns if column in watchlist.columns]
+    st.dataframe(
+        watchlist[columns],
+        use_container_width=True,
+        hide_index=True,
+        column_config=CAMPAIGN_TABLE_COLUMN_CONFIG,
+    )
