@@ -24,7 +24,8 @@ def main() -> None:
 
     allocation = allocate_budget(synthetic, OptimizerConfig(total_budget=100_000))
     summary = summarize_allocation(allocation)
-    assert round(summary["budget"], 2) == 100_000.00
+    assert round(summary["budget"] + summary["unallocated"], 2) == 100_000.00
+    assert summary["budget"] > 0
 
     demand_items, demand_status = fetch_demand_pulse(
         TrendQuery(keywords=("AI marketing",), max_items_per_source=1),
@@ -38,7 +39,8 @@ def main() -> None:
         CompetitorQuery(competitors=("HubSpot",), keywords=("AI marketing",), max_items_per_source=1),
         sources=("Meta Ad Library", "TikTok Creative Center"),
     )
-    assert len(competitor_items) == 1
+    # Without API tokens both sources contribute live-search link rows.
+    assert len(competitor_items) == 2
     assert not competitor_status.empty
 
     print("smoke test passed")

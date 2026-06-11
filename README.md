@@ -6,11 +6,11 @@ Public repo: https://github.com/AMYFYJ/marketing-intel-streamlit
 
 ## What It Does
 
-- **Performance**: paid-media KPI command center with campaign filters, ROAS/CPA/CTR/CVR metrics, anomaly flags, and action recommendations.
-- **Competitor Intelligence**: competitor and creative monitoring across Meta Ad Library, TikTok Creative Center, YouTube, Reddit, and GDELT/news.
-- **Demand Pulse**: live demand monitoring for marketing topics using GDELT, Reddit, optional YouTube, and trend exports.
-- **Budget Optimizer**: 250k-row synthetic media-mix dataset with spend allocation, diminishing-return logic, and CSV/API connector paths.
-- **Data Sources**: source attribution and deployment notes.
+- **Performance**: paid-media KPI command center with campaign filters, period-over-period deltas, daily/weekly/monthly trends, platform-relative Scale/Optimize/Watch/Pause recommendations, a directional anomaly watchlist, and CSV export. Demo campaigns persist across days and are calibrated to believable benchmarks (~3x blended ROAS).
+- **Competitor Intelligence**: competitor and creative monitoring across Meta Ad Library, TikTok Creative Center, YouTube, Reddit, and GDELT/news, with share-of-voice and creative theme/CTA analysis (word-boundary matching, placeholder links excluded) plus clickable live-search links.
+- **Demand Pulse**: live demand monitoring with mentions-per-day trends, accelerating/steady/cooling momentum per keyword, VADER sentiment, and plain-language campaign angles.
+- **Budget Optimizer**: allocates budget greedily along per-channel diminishing-return curves with risk-adjusted marginal ROAS; ROAS/CPA targets act as constraints and unservable budget is reported as unallocated. Uploaded CSVs get marginal returns fitted from daily spend variation when available.
+- **Data Sources**: source attribution, live configuration status, and deployment notes.
 
 ## Data Sources
 
@@ -27,7 +27,7 @@ Place the downloaded CSV in `data/` using one of these names:
 - `paid_media_campaigns.csv`
 - `campaign_performance.csv`
 
-If no CSV is present, the app uses a deterministic fallback campaign sample with the same metric schema so the dashboard remains deployable.
+If no CSV is present, the app uses a deterministic fallback campaign sample with the same metric schema so the dashboard remains deployable. The sample models ~230 persistent campaigns with daily rows over two years, calibrated to believable paid-media economics (blended ROAS ~3x, platform ordering from efficient search to expensive B2B).
 
 ### Live and optional sources
 
