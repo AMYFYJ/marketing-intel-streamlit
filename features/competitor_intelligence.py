@@ -57,22 +57,28 @@ COMPETITOR_OPTIONS = [
     # SaaS and martech
     "HubSpot", "Salesforce", "Klaviyo", "Mailchimp", "Braze", "Adobe", "Shopify", "Canva", "Notion", "Intercom",
 ]
+# Verticals and categories ad agencies commonly plan against.
 KEYWORD_OPTIONS = [
-    "advertising campaign",
-    "influencer marketing",
-    "brand launch",
-    "social media campaign",
-    "retail media",
-    "connected tv advertising",
-    "holiday shopping",
-    "user generated content",
-    "loyalty program",
-    "personalization",
-    "ecommerce marketing",
-    "marketing automation",
-    "customer data",
-    "email campaigns",
-    "artificial intelligence marketing",
+    "beauty",
+    "clothing",
+    "consumer products",
+    "education",
+    "finance",
+    "fitness and wellness",
+    "food and beverage",
+    "gaming",
+    "home and furniture",
+    "live event tickets",
+    "luxury",
+    "music",
+    "pets",
+    "retail",
+    "SaaS",
+    "service subscriptions",
+    "sports",
+    "streaming services",
+    "toys",
+    "travel",
 ]
 
 
@@ -88,7 +94,12 @@ def render() -> None:
             default=["Nike", "Sephora", "Duolingo"],
             help="Brands to search for across the selected sources. Leave empty to run a market scan on the keywords alone.",
         )
-        selected_keywords = c2.multiselect("Keywords or themes", KEYWORD_OPTIONS, default=["advertising campaign", "influencer marketing"])
+        selected_keywords = c2.multiselect(
+            "Keywords or themes",
+            KEYWORD_OPTIONS,
+            default=["sports", "beauty", "education"],
+            help="Industry verticals to scan. Combined with each competitor, or searched alone in a market scan.",
+        )
         country = c3.selectbox("Market", ["US", "GB", "CA", "AU", "DE", "FR"], index=0)
         max_items = c3.slider("Items/source", min_value=5, max_value=50, value=15, step=5)
         sources = st.multiselect(
