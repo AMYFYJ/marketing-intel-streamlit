@@ -36,14 +36,42 @@ def _cached_competitor_intelligence(
     )
 
 
+COMPETITOR_OPTIONS = [
+    "HubSpot",
+    "Salesforce",
+    "Klaviyo",
+    "Mailchimp",
+    "Braze",
+    "Adobe Marketo",
+    "ActiveCampaign",
+    "Iterable",
+    "Attentive",
+    "Intercom",
+    "Zoho",
+    "Pipedrive",
+]
+KEYWORD_OPTIONS = [
+    "marketing automation",
+    "customer data",
+    "email campaigns",
+    "artificial intelligence marketing",
+    "personalization",
+    "customer engagement",
+    "lead generation",
+    "loyalty program",
+    "ecommerce marketing",
+    "analytics",
+]
+
+
 def render() -> None:
     st.subheader("Competitor Ads + Creative Intelligence")
     st.caption("Monitor competitor creative signals from Meta Ad Library, TikTok Creative Center, YouTube, Reddit, and news sources.")
 
     with st.form("competitor_controls"):
         c1, c2, c3 = st.columns([2, 2, 1])
-        raw_competitors = c1.text_area("Competitors", value="HubSpot, Salesforce, Klaviyo", height=88)
-        raw_keywords = c2.text_area("Keywords or themes", value="marketing automation, customer data, email campaigns", height=88)
+        selected_competitors = c1.multiselect("Competitors", COMPETITOR_OPTIONS, default=["HubSpot", "Salesforce", "Klaviyo"])
+        selected_keywords = c2.multiselect("Keywords or themes", KEYWORD_OPTIONS, default=["marketing automation", "customer data", "email campaigns"])
         country = c3.selectbox("Market", ["US", "GB", "CA", "AU", "DE", "FR"], index=0)
         max_items = c3.slider("Items/source", min_value=5, max_value=50, value=15, step=5)
         sources = st.multiselect(
@@ -54,13 +82,13 @@ def render() -> None:
         submitted = st.form_submit_button("Refresh competitor intelligence")
 
     if not submitted:
-        st.info("Enter competitors and refresh. Meta API and YouTube are optional; TikTok Creative Center opens live creative-search links.")
+        st.info("Select competitors and refresh. Meta API and YouTube are optional; TikTok Creative Center opens live creative-search links.")
         return
 
-    competitors = parse_competitors(raw_competitors)
-    keywords = parse_keywords(raw_keywords)
+    competitors = parse_competitors(selected_competitors)
+    keywords = parse_keywords(selected_keywords)
     if not competitors:
-        st.warning("Enter at least one competitor.")
+        st.warning("Select at least one competitor.")
         return
 
     meta_token = _get_secret("META_ACCESS_TOKEN")

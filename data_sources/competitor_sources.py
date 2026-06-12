@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable
 from urllib.parse import quote_plus
 
 import pandas as pd
@@ -52,7 +52,7 @@ class CompetitorQuery:
     max_items_per_source: int = 20
 
 
-def parse_competitors(raw: str) -> tuple[str, ...]:
+def parse_competitors(raw: str | Iterable[str]) -> tuple[str, ...]:
     return parse_keywords(raw)
 
 
