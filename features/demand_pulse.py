@@ -31,6 +31,7 @@ def _cached_demand_pulse(
     youtube_api_key: str | None,
     meta_access_token: str | None,
     meta_api_version: str,
+    meta_market: str = "DE",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     items, statuses = fetch_demand_pulse(
         TrendQuery(keywords=keywords, lookback_days=lookback_days, max_items_per_source=max_items_per_source),
@@ -47,6 +48,7 @@ def _cached_demand_pulse(
                 keyword,
                 competitor=keyword,
                 access_token=meta_access_token,
+                country=meta_market,
                 api_version=meta_api_version,
                 max_records=max_items_per_source,
             )
@@ -94,11 +96,17 @@ def render() -> None:
         )
         lookback_days = c2.slider("Lookback Days", min_value=1, max_value=30, value=7)
         max_items = c3.slider("Items per Source", min_value=10, max_value=100, value=50, step=10)
+        meta_market = c2.selectbox(
+            "Meta Ads Market",
+            ["DE", "FR", "NL", "ES", "IT", "US", "GB", "CA", "AU"],
+            index=0,
+            help="Meta's Ad Library API returns commercial ads only for EU markets; outside the EU it covers political/issue ads only. EU markets act as a proxy for global ad volume.",
+        )
         sources = st.multiselect(
             "Sources",
             ["GDELT", "Reddit", "Meta Ad Library", "TikTok Creative Center", "YouTube", "Google Trends export", "Pinterest export"],
             default=["GDELT", "Reddit", "Meta Ad Library", "TikTok Creative Center"],
-            help="GDELT, Reddit, and TikTok need no keys. Meta Ad Library needs META_ACCESS_TOKEN; YouTube needs YOUTUBE_API_KEY. The export sources read CSV files from data/.",
+            help="GDELT and Reddit need no keys and feed the charts. Meta Ad Library feeds the charts when META_ACCESS_TOKEN is set. TikTok has no public API and contributes live links only. YouTube needs YOUTUBE_API_KEY; the export sources read CSV files from data/.",
         )
         submitted = st.form_submit_button("Refresh Live Demand Signals")
 
@@ -113,7 +121,7 @@ def render() -> None:
     youtube_key = _get_secret("YOUTUBE_API_KEY")
     meta_token = _get_secret("META_ACCESS_TOKEN")
     meta_version = _get_secret("META_GRAPH_VERSION") or "v21.0"
-    items, statuses, live_links = _cached_demand_pulse(keywords, lookback_days, max_items, tuple(sources), youtube_key, meta_token, meta_version)
+    items, statuses, live_links = _cached_demand_pulse(keywords, lookback_days, max_items, tuple(sources), youtube_key, meta_token, meta_version, meta_market)
     _render_status(statuses, expanded=items.empty)
     if items.empty:
         failed = statuses[statuses["status"] == "failed"] if not statuses.empty else pd.DataFrame()

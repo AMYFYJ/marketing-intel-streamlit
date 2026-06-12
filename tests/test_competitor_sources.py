@@ -54,6 +54,27 @@ def test_meta_ad_library_without_token_returns_public_search_link() -> None:
     assert "facebook.com/ads/library" in frame.loc[0, "url"]
 
 
+def test_meta_ad_library_empty_us_result_explains_eu_coverage() -> None:
+    class EmptyResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"data": []}
+
+    frame, status = fetch_meta_ad_library("Beauty", "Beauty", access_token="token", country="US", request_get=lambda *a, **k: EmptyResponse())
+
+    assert frame.empty
+    assert status["status"] == "ok"
+    assert "EU markets" in status["detail"]
+
+    # EU markets do not need the note.
+    _, eu_status = fetch_meta_ad_library("Beauty", "Beauty", access_token="token", country="DE", request_get=lambda *a, **k: EmptyResponse())
+    assert "EU markets" not in eu_status["detail"]
+
+
 def test_meta_ad_library_parses_api_payload() -> None:
     def fake_get(*args, **kwargs):
         return FakeResponse()

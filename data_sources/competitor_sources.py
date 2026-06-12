@@ -33,6 +33,14 @@ LIVE_LINK_ASSET_TYPE = "Live search link"
 # Competitor label used when no competitors are selected and keywords run as a market scan.
 MARKET_SCAN_LABEL = "Market scan"
 
+# Meta's Ad Library API returns ads of every type only for EU member states
+# (DSA transparency); elsewhere keyword search covers political/issue ads only.
+META_FULL_COVERAGE_COUNTRIES = {"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE"}
+META_US_COVERAGE_NOTE = (
+    "Meta's API returns commercial ads only for EU markets (e.g. DE, FR, NL, ES, IT); "
+    "outside the EU, keyword search covers political/issue ads only. Pick an EU market for commercial ad volume."
+)
+
 
 def _compile_label_patterns(label_terms: dict[str, tuple[str, ...]]) -> dict[str, re.Pattern[str]]:
     # Word-boundary matching so "sale" does not match "Salesforce" and "ai" does not match "email".
@@ -156,7 +164,10 @@ def fetch_meta_ad_library(
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:  # pragma: no cover
-        return empty_competitor_frame(), _status("Meta Ad Library", search_term, "failed", str(exc))
+        detail = str(exc)
+        if country.upper() not in META_FULL_COVERAGE_COUNTRIES:
+            detail = f"{detail}. {META_US_COVERAGE_NOTE}"
+        return empty_competitor_frame(), _status("Meta Ad Library", search_term, "failed", detail)
 
     rows = []
     for ad in payload.get("data", [])[:max_records]:
@@ -177,7 +188,10 @@ def fetch_meta_ad_library(
                 "engagement": 0.0,
             }
         )
-    return pd.DataFrame(rows, columns=empty_competitor_frame().columns), _status("Meta Ad Library", search_term, "ok", f"{len(rows)} ads")
+    detail = f"{len(rows)} ads"
+    if not rows and country.upper() not in META_FULL_COVERAGE_COUNTRIES:
+        detail = f"0 ads. {META_US_COVERAGE_NOTE}"
+    return pd.DataFrame(rows, columns=empty_competitor_frame().columns), _status("Meta Ad Library", search_term, "ok", detail)
 
 
 def fetch_tiktok_creative_center_link(search_term: str, competitor: str) -> tuple[pd.DataFrame, dict[str, str]]:

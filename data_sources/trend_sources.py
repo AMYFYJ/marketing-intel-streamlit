@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -177,6 +178,20 @@ def filter_to_lookback(frame: pd.DataFrame, lookback_days: int) -> pd.DataFrame:
     return frame[~windowed | within].reset_index(drop=True)
 
 
+# GDELT allows roughly one request every five seconds; pace sequential calls so
+# multi-keyword refreshes don't lose every keyword after the first to 429s.
+GDELT_MIN_INTERVAL_SECONDS = 5.0
+_last_gdelt_call = 0.0
+
+
+def _respect_gdelt_rate_limit() -> None:
+    global _last_gdelt_call
+    wait = GDELT_MIN_INTERVAL_SECONDS - (time.monotonic() - _last_gdelt_call)
+    if wait > 0:
+        time.sleep(wait)
+    _last_gdelt_call = time.monotonic()
+
+
 def fetch_gdelt(
     keyword: str,
     max_records: int = 25,
@@ -194,9 +209,17 @@ def fetch_gdelt(
         "timespan": f"{max(int(lookback_days), 1)}d",
         "sort": "HybridRel",
     }
+    live_request = request_get is requests.get
     try:
+        if live_request:
+            _respect_gdelt_rate_limit()
         response = request_get(url, params=params, timeout=12)
         status_code = getattr(response, "status_code", 200)
+        if status_code == 429 and live_request:
+            # One paced retry before giving up on this keyword.
+            time.sleep(GDELT_MIN_INTERVAL_SECONDS)
+            response = request_get(url, params=params, timeout=12)
+            status_code = getattr(response, "status_code", 200)
         if status_code == 429:
             return empty_trend_frame(), _status("GDELT", keyword, "rate limited", "GDELT allows roughly one request every five seconds")
         response.raise_for_status()

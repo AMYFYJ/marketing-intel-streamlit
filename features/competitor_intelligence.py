@@ -101,7 +101,12 @@ def render() -> None:
             default=["Sports", "Beauty", "Education"],
             help="Industry verticals to scan. Combined with each competitor, or searched alone in a market scan.",
         )
-        country = c3.selectbox("Market", ["US", "GB", "CA", "AU", "DE", "FR"], index=0)
+        country = c3.selectbox(
+            "Market",
+            ["US", "GB", "CA", "AU", "DE", "FR"],
+            index=0,
+            help="Meta's Ad Library API returns commercial ads only for EU markets (DE, FR); elsewhere it covers political/issue ads only.",
+        )
         max_items = c3.slider("Items/Source", min_value=5, max_value=50, value=15, step=5)
         sources = st.multiselect(
             "Sources",
