@@ -10,6 +10,7 @@ from data_sources.trend_sources import (
     fetch_demand_pulse,
     parse_keywords,
     recommend_campaign_angles,
+    summarize_channels,
 )
 from features.competitor_intelligence import KEYWORD_OPTIONS as VERTICAL_THEMES
 from utils.formatting import display_labels, title_case_columns
@@ -30,69 +31,17 @@ def _cached_demand_pulse(
     )
 
 
-# Curated keyword sets that fetch reliably from public news and social sources
-# (every word is 3+ characters for GDELT, and topics carry steady coverage volume).
-KEYWORD_CATEGORIES = {
-    "Industry Verticals": VERTICAL_THEMES,
-    "Marketing Channels": [
-        "Retail Media",
-        "Influencer Marketing",
-        "Connected TV Advertising",
-        "Social Commerce",
-        "Programmatic Advertising",
-        "Search Advertising",
-        "Email Marketing",
-        "Affiliate Marketing",
-        "Out of Home Advertising",
-        "Podcast Advertising",
-    ],
-    "Seasonal Moments": [
-        "Black Friday",
-        "Cyber Monday",
-        "Holiday Shopping",
-        "Back to School",
-        "Valentines Day",
-        "Mothers Day",
-        "Summer Travel",
-        "Super Bowl Ads",
-        "Prime Day",
-    ],
-    "Consumer Trends": [
-        "Clean Beauty",
-        "Athleisure",
-        "Plant Based Food",
-        "Buy Now Pay Later",
-        "Secondhand Shopping",
-        "Loyalty Programs",
-        "Sustainability",
-        "Artificial Intelligence",
-    ],
-}
-KEYWORD_DEFAULTS = {
-    "Industry Verticals": ["Retail", "Beauty", "Gaming"],
-    "Marketing Channels": ["Retail Media", "Influencer Marketing", "Connected TV Advertising"],
-    "Seasonal Moments": ["Holiday Shopping", "Black Friday"],
-    "Consumer Trends": ["Buy Now Pay Later", "Clean Beauty"],
-}
-
-
 def render() -> None:
     st.subheader("Demand Pulse")
     st.caption("Track live category and competitor demand signals from public news, social, video, and trend-export sources.")
 
-    category = st.radio(
-        "Keyword Category",
-        list(KEYWORD_CATEGORIES),
-        horizontal=True,
-        help="Curated keyword sets that fetch reliably from public sources. Pick a category, then choose keywords below.",
-    )
     with st.form("demand_pulse_controls"):
         c1, c2, c3 = st.columns([2, 1, 1])
         selected_keywords = c1.multiselect(
-            "Keywords",
-            KEYWORD_CATEGORIES[category],
-            default=KEYWORD_DEFAULTS[category],
-            help="Keywords are searched individually across the selected sources.",
+            "Industry Verticals",
+            VERTICAL_THEMES,
+            default=["Retail", "Beauty", "Gaming"],
+            help="Each vertical is searched across the selected sources; the dashboards then break results down by marketing channel automatically.",
         )
         lookback_days = c2.slider("Lookback Days", min_value=1, max_value=30, value=7)
         max_items = c3.slider("Items per Source", min_value=5, max_value=50, value=20, step=5)
@@ -105,10 +54,10 @@ def render() -> None:
 
     keywords = parse_keywords(selected_keywords)
     if not submitted:
-        st.info("Pick a keyword category and keywords, then refresh to fetch cached live demand signals. GDELT and Reddit need no API key; YouTube needs `YOUTUBE_API_KEY` in Streamlit secrets.")
+        st.info("Pick industry verticals and refresh to fetch cached live demand signals. GDELT and Reddit need no API key; YouTube needs `YOUTUBE_API_KEY` in Streamlit secrets.")
         return
     if not keywords:
-        st.warning("Select at least one keyword.")
+        st.warning("Select at least one industry vertical.")
         return
 
     youtube_key = _get_secret("YOUTUBE_API_KEY")
@@ -177,13 +126,54 @@ def _render_summary(items: pd.DataFrame, summary: pd.DataFrame, angles: pd.DataF
         use_container_width=True,
     )
 
+    _render_channel_breakdown(items)
+
     st.markdown("#### Recommended Campaign Angles")
     st.dataframe(title_case_columns(angles), use_container_width=True, hide_index=True)
 
 
+def _render_channel_breakdown(items: pd.DataFrame) -> None:
+    st.markdown("#### Marketing Channel Breakdown")
+    channels = summarize_channels(items)
+    if channels.empty:
+        st.info("No items in the current results mention a specific marketing channel (retail media, influencer, connected TV, paid search, ...). Broaden the verticals or lookback to surface channel-level chatter.")
+        return
+    classified = int(channels["mentions"].sum())
+    st.caption(
+        f"{classified} of {len(items)} fetched items mention a specific marketing channel; "
+        "items are classified automatically from their text."
+    )
+    c1, c2 = st.columns(2)
+    breakdown_fig = px.bar(
+        channels,
+        x="channel",
+        y="mentions",
+        color="keyword",
+        title="Channel Mentions by Vertical",
+        labels=display_labels(["channel", "mentions", "keyword"]),
+    )
+    breakdown_fig.update_xaxes(categoryorder="total descending")
+    c1.plotly_chart(breakdown_fig, use_container_width=True)
+
+    channel_sentiment = channels.groupby("channel", as_index=False).agg(mentions=("mentions", "sum"), avg_sentiment=("avg_sentiment", "mean"))
+    c2.plotly_chart(
+        px.scatter(
+            channel_sentiment,
+            x="mentions",
+            y="avg_sentiment",
+            size="mentions",
+            color="channel",
+            hover_name="channel",
+            title="Channel Volume vs Sentiment",
+            labels=display_labels(["mentions", "avg_sentiment", "channel"]),
+        ),
+        use_container_width=True,
+    )
+
+
 def _render_items(items: pd.DataFrame) -> None:
     st.markdown("#### Latest Signals")
-    display = items.sort_values("published_at", ascending=False)[["source", "keyword", "title", "author", "published_at", "sentiment", "url"]].head(250)
+    display = items.sort_values("published_at", ascending=False)[["source", "keyword", "channel", "title", "author", "published_at", "sentiment", "url"]].head(250)
     st.dataframe(
         title_case_columns(display),
         use_container_width=True,

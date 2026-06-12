@@ -3,14 +3,17 @@ from __future__ import annotations
 import pandas as pd
 
 from data_sources.trend_sources import (
+    NO_CHANNEL_LABEL,
     TrendQuery,
     compute_trend_summary,
+    detect_channel,
     fetch_demand_pulse,
     fetch_gdelt,
     fetch_youtube,
     parse_keywords,
     recommend_campaign_angles,
     sentiment_score,
+    summarize_channels,
 )
 
 
@@ -126,6 +129,31 @@ def test_sentiment_score_handles_real_marketing_headlines() -> None:
     assert sentiment_score("lawsuit filed against ad platform") < 0
     assert sentiment_score("record losses and layoffs announced") < 0
     assert sentiment_score("the report was published on Tuesday") == 0
+
+
+def test_detect_channel_classifies_marketing_channels() -> None:
+    assert detect_channel("Beauty brands shift budgets into retail media networks") == "Retail Media"
+    assert detect_channel("Why gaming studios bet on influencer partnerships") == "Influencer Marketing"
+    assert detect_channel("Connected TV ad spending hits record highs") == "Connected TV"
+    assert detect_channel("Quarterly results beat expectations") == NO_CHANNEL_LABEL
+    # Word-boundary matching: 'ppc' must not match inside other words.
+    assert detect_channel("the hippopotamus escaped") == NO_CHANNEL_LABEL
+
+
+def test_summarize_channels_counts_classified_items_only() -> None:
+    items = pd.DataFrame(
+        {
+            "keyword": ["Retail", "Retail", "Beauty"],
+            "title": ["a", "b", "c"],
+            "channel": ["Retail Media", NO_CHANNEL_LABEL, "Influencer Marketing"],
+            "sentiment": [0.2, 0.0, -0.1],
+        }
+    )
+
+    summary = summarize_channels(items)
+
+    assert int(summary["mentions"].sum()) == 2
+    assert set(summary["channel"]) == {"Retail Media", "Influencer Marketing"}
 
 
 def test_fetch_demand_pulse_handles_export_only(tmp_path) -> None:

@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import quote_plus
 
+import re
+
 import feedparser
 import numpy as np
 import pandas as pd
@@ -14,6 +16,34 @@ import requests
 # Momentum thresholds for the recent-vs-earlier mention comparison (percent).
 ACCELERATING_THRESHOLD = 25.0
 COOLING_THRESHOLD = -25.0
+
+# Marketing channels detected in fetched items (first match wins, most specific
+# first) so dashboards can break demand down by channel without user input.
+CHANNEL_TERMS = {
+    "Retail Media": ("retail media",),
+    "Connected TV": ("connected tv", "ctv", "streaming ads", "streaming advertising", "addressable tv"),
+    "Influencer Marketing": ("influencer", "influencers", "creator marketing", "creator economy"),
+    "Paid Social": ("paid social", "social ads", "social advertising", "tiktok ads", "instagram ads", "facebook ads", "meta ads"),
+    "Paid Search": ("paid search", "search ads", "search advertising", "google ads", "ppc"),
+    "Email Marketing": ("email marketing", "email campaign", "email campaigns", "newsletter"),
+    "Affiliate Marketing": ("affiliate", "affiliates"),
+    "Out of Home": ("out of home", "billboard", "billboards", "ooh advertising"),
+    "Podcast Advertising": ("podcast", "podcasts"),
+}
+NO_CHANNEL_LABEL = "No Channel Mention"
+
+_CHANNEL_REGEXES = {
+    label: re.compile(r"\b(?:" + "|".join(re.escape(term) for term in terms) + r")\b")
+    for label, terms in CHANNEL_TERMS.items()
+}
+
+
+def detect_channel(text: str) -> str:
+    lowered = str(text).lower()
+    for label, regex in _CHANNEL_REGEXES.items():
+        if regex.search(lowered):
+            return label
+    return NO_CHANNEL_LABEL
 
 _VADER_ANALYZER = None
 
@@ -87,6 +117,7 @@ def fetch_demand_pulse(
     if not combined.empty:
         combined["published_at"] = pd.to_datetime(combined["published_at"], errors="coerce", utc=True)
         combined["sentiment"] = combined.apply(lambda row: sentiment_score(f"{row['title']} {row['snippet']}"), axis=1)
+        combined["channel"] = combined.apply(lambda row: detect_channel(f"{row['title']} {row['snippet']}"), axis=1)
         combined["recency_hours"] = (pd.Timestamp.now(tz="UTC") - combined["published_at"]).dt.total_seconds() / 3600
         combined["recency_hours"] = combined["recency_hours"].clip(lower=0).fillna(query.lookback_days * 24)
     return combined, pd.DataFrame(statuses)
@@ -259,6 +290,20 @@ def compute_trend_summary(items: pd.DataFrame, lookback_days: int = 7) -> pd.Dat
         default="Steady",
     )
     return summary[columns].sort_values(["velocity", "mentions"], ascending=False)
+
+
+def summarize_channels(items: pd.DataFrame) -> pd.DataFrame:
+    """Mentions of specific marketing channels per keyword, for the channel breakdown chart."""
+    if items.empty or "channel" not in items.columns:
+        return pd.DataFrame(columns=["channel", "keyword", "mentions", "avg_sentiment"])
+    classified = items[items["channel"] != NO_CHANNEL_LABEL]
+    if classified.empty:
+        return pd.DataFrame(columns=["channel", "keyword", "mentions", "avg_sentiment"])
+    return (
+        classified.groupby(["channel", "keyword"], as_index=False)
+        .agg(mentions=("title", "count"), avg_sentiment=("sentiment", "mean"))
+        .sort_values("mentions", ascending=False)
+    )
 
 
 def recommend_campaign_angles(summary: pd.DataFrame, items: pd.DataFrame) -> pd.DataFrame:
