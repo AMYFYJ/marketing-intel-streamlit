@@ -44,9 +44,9 @@ def _render_live_configuration() -> None:
     st.markdown("#### Current Configuration")
     rows = [
         {
-            "item": f"Secret: {name}",
-            "status": "configured" if _get_secret(name) else "not set",
-            "detail": "Used for live API calls." if _get_secret(name) else "Optional — the app falls back to public links or other sources.",
+            "Item": f"Secret: {name}",
+            "Status": "configured" if _get_secret(name) else "not set",
+            "Detail": "Used for live API calls." if _get_secret(name) else "Optional — the app falls back to public links or other sources.",
         }
         for name in OPTIONAL_SECRETS
     ]
@@ -55,18 +55,18 @@ def _render_live_configuration() -> None:
     campaign_csv = next((name for name in SOURCE_CANDIDATES if (data_dir / name).exists()), None)
     rows.append(
         {
-            "item": "Campaign CSV in data/",
-            "status": campaign_csv or "not found",
-            "detail": "Loaded as the Performance dataset." if campaign_csv else "Using the deterministic fallback sample.",
+            "Item": "Campaign CSV in data/",
+            "Status": campaign_csv or "not found",
+            "Detail": "Loaded as the Performance dataset." if campaign_csv else "Using the deterministic fallback sample.",
         }
     )
     for export in TREND_EXPORTS:
         present = (data_dir / export).exists()
         rows.append(
             {
-                "item": f"Trend export: {export}",
-                "status": "found" if present else "not found",
-                "detail": "Available as a Demand Pulse source." if present else "Optional manual export for Demand Pulse.",
+                "Item": f"Trend export: {export}",
+                "Status": "found" if present else "not found",
+                "Detail": "Available as a Demand Pulse source." if present else "Optional manual export for Demand Pulse.",
             }
         )
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)

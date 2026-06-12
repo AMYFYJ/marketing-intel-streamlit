@@ -30,7 +30,7 @@ def test_allocate_budget_accounts_for_full_budget() -> None:
     assert round(allocated + unallocated, 2) == 250_000.00
     assert allocation["expected_revenue"].ge(0).all()
     assert allocation["expected_roas"].ge(0).all()
-    assert set(allocation["action"].unique()).issubset({"Increase", "Maintain", "Decrease", "Limit (target)"})
+    assert set(allocation["action"].unique()).issubset({"Increase", "Maintain", "Decrease", "Limit (Target)"})
 
 
 def test_allocation_mix_shifts_when_budget_scales() -> None:
@@ -63,7 +63,7 @@ def test_tight_targets_leave_budget_unallocated() -> None:
     allocation = allocate_budget(frame, OptimizerConfig(total_budget=2_000_000, target_roas=3.5, target_cpa=35))
 
     assert float(allocation["unallocated"].iloc[0]) > 0
-    assert "Limit (target)" in set(allocation["action"])
+    assert "Limit (Target)" in set(allocation["action"])
 
 
 def test_summarize_allocation_uses_weighted_totals() -> None:

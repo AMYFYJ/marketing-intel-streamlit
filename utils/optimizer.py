@@ -169,7 +169,7 @@ def _actions(allocation_share: np.ndarray, historical_share: np.ndarray, constra
     actions = []
     for share, hist, limited in zip(allocation_share, historical_share, constrained):
         if limited and (share == 0 or share < hist * 0.85):
-            actions.append("Limit (target)")
+            actions.append("Limit (Target)")
         elif share > hist * 1.15:
             actions.append("Increase")
         elif share < hist * 0.85:

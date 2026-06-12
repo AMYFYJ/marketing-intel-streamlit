@@ -6,19 +6,19 @@ import streamlit as st
 
 from data_sources.connectors import available_connector_specs, normalize_uploaded_campaign_csv
 from data_sources.synthetic_media_mix import DEFAULT_SYNTHETIC_ROWS, generate_synthetic_media_mix, validate_media_mix_frame
-from utils.formatting import format_currency, format_roas
+from utils.formatting import display_labels, format_currency, format_roas, title_case_columns
 from utils.optimizer import OptimizerConfig, allocate_budget, summarize_allocation
 
 ALLOCATION_COLUMN_CONFIG = {
-    "allocation": st.column_config.NumberColumn("allocation", format="dollar"),
-    "allocation_share": st.column_config.NumberColumn("allocation_share", format="percent"),
-    "expected_revenue": st.column_config.NumberColumn("expected_revenue", format="dollar"),
-    "expected_profit": st.column_config.NumberColumn("expected_profit", format="dollar"),
-    "expected_roas": st.column_config.NumberColumn("expected_roas", format="%.2fx"),
-    "expected_cpa": st.column_config.NumberColumn("expected_cpa", format="dollar"),
-    "marginal_roas": st.column_config.NumberColumn("marginal_roas", format="%.2f"),
-    "risk_index": st.column_config.NumberColumn("risk_index", format="%.2f"),
-    "saturation_index": st.column_config.NumberColumn("saturation_index", format="%.2f"),
+    "Allocation": st.column_config.NumberColumn("Allocation", format="dollar"),
+    "Allocation Share": st.column_config.NumberColumn("Allocation Share", format="percent"),
+    "Expected Revenue": st.column_config.NumberColumn("Expected Revenue", format="dollar"),
+    "Expected Profit": st.column_config.NumberColumn("Expected Profit", format="dollar"),
+    "Expected ROAS": st.column_config.NumberColumn("Expected ROAS", format="%.2fx"),
+    "Expected CPA": st.column_config.NumberColumn("Expected CPA", format="dollar"),
+    "Marginal ROAS": st.column_config.NumberColumn("Marginal ROAS", format="%.2f"),
+    "Risk Index": st.column_config.NumberColumn("Risk Index", format="%.2f"),
+    "Saturation Index": st.column_config.NumberColumn("Saturation Index", format="%.2f"),
 }
 
 
@@ -34,7 +34,7 @@ def render() -> None:
         "channel with the highest risk-adjusted marginal ROAS, and stops where targets can no longer be met."
     )
 
-    uploaded = st.file_uploader("Optional campaign CSV override", type=["csv"], help="Upload real campaign data to replace the synthetic demo dataset for this session.")
+    uploaded = st.file_uploader("Optional Campaign CSV Override", type=["csv"], help="Upload real campaign data to replace the synthetic demo dataset for this session.")
     if uploaded is not None:
         source = normalize_uploaded_campaign_csv(pd.read_csv(uploaded))
         st.success(f"Using uploaded campaign data: {len(source):,} rows")
@@ -83,14 +83,14 @@ def _render_controls(source: pd.DataFrame) -> OptimizerConfig:
     st.markdown("#### Scenario Controls")
     c1, c2, c3, c4 = st.columns(4)
     total_budget = c1.slider("Budget", min_value=10_000, max_value=2_000_000, value=250_000, step=10_000)
-    target_roas = c2.slider("Target ROAS (marginal floor)", min_value=0.5, max_value=6.0, value=2.0, step=0.1)
-    target_cpa = c3.slider("Target CPA (marginal cap)", min_value=10, max_value=500, value=80, step=5)
-    risk_tolerance = c4.slider("Risk tolerance", min_value=0.0, max_value=1.0, value=0.55, step=0.05)
+    target_roas = c2.slider("Target ROAS (Marginal Floor)", min_value=0.5, max_value=6.0, value=2.0, step=0.1)
+    target_cpa = c3.slider("Target CPA (Marginal Cap)", min_value=10, max_value=500, value=80, step=5)
+    risk_tolerance = c4.slider("Risk Tolerance", min_value=0.0, max_value=1.0, value=0.55, step=0.05)
 
     c5, c6 = st.columns(2)
     objectives = ["All"] + sorted(source["objective"].dropna().astype(str).unique().tolist())
     objective = c5.selectbox("Objective", objectives, index=0)
-    excluded = c6.multiselect("Exclude platforms", sorted(source["platform"].dropna().astype(str).unique().tolist()))
+    excluded = c6.multiselect("Exclude Platforms", sorted(source["platform"].dropna().astype(str).unique().tolist()))
 
     return OptimizerConfig(
         total_budget=float(total_budget),
@@ -104,14 +104,14 @@ def _render_controls(source: pd.DataFrame) -> OptimizerConfig:
 
 def _render_summary(summary: dict[str, float], config: OptimizerConfig) -> None:
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Allocated budget", format_currency(summary["budget"]))
-    c2.metric("Expected revenue", format_currency(summary["expected_revenue"]))
-    c3.metric("Expected profit", format_currency(summary["expected_profit"]))
+    c1.metric("Allocated Budget", format_currency(summary["budget"]))
+    c2.metric("Expected Revenue", format_currency(summary["expected_revenue"]))
+    c3.metric("Expected Profit", format_currency(summary["expected_profit"]))
     c4.metric("Expected ROAS", format_roas(summary["expected_roas"]))
     c5, c6, c7 = st.columns(3)
-    c5.metric("Expected conversions", f"{summary['expected_conversions']:,.0f}")
+    c5.metric("Expected Conversions", f"{summary['expected_conversions']:,.0f}")
     c6.metric("Expected CPA", format_currency(summary["expected_cpa"]))
-    c7.metric("Unallocated budget", format_currency(summary["unallocated"]))
+    c7.metric("Unallocated Budget", format_currency(summary["unallocated"]))
     if summary["unallocated"] > 0:
         st.warning(
             f"{format_currency(summary['unallocated'])} of the budget stays unallocated: no channel's marginal "
@@ -123,7 +123,10 @@ def _render_summary(summary: dict[str, float], config: OptimizerConfig) -> None:
 def _render_allocation_charts(allocation: pd.DataFrame) -> None:
     st.markdown("#### Recommended Allocation")
     c1, c2 = st.columns(2)
-    c1.plotly_chart(px.bar(allocation, x="platform", y="allocation", color="action", title="Budget allocation by platform"), use_container_width=True)
+    c1.plotly_chart(
+        px.bar(allocation, x="platform", y="allocation", color="action", title="Budget Allocation by Platform", labels=display_labels(["platform", "allocation", "action"])),
+        use_container_width=True,
+    )
     funded = allocation[allocation["allocation"] > 0]
     c2.plotly_chart(
         px.scatter(
@@ -134,7 +137,8 @@ def _render_allocation_charts(allocation: pd.DataFrame) -> None:
             color="platform",
             hover_name="platform",
             hover_data={"allocation": ":,.0f", "action": True},
-            title="Efficiency frontier (funded channels)",
+            title="Efficiency Frontier (Funded Channels)",
+            labels=display_labels(["expected_cpa", "expected_roas", "allocation", "platform", "action"]),
         ),
         use_container_width=True,
     )
@@ -154,11 +158,11 @@ def _render_allocation_charts(allocation: pd.DataFrame) -> None:
             "action",
         ]
     ]
-    st.dataframe(display, use_container_width=True, hide_index=True, column_config=ALLOCATION_COLUMN_CONFIG)
+    st.dataframe(title_case_columns(display), use_container_width=True, hide_index=True, column_config=ALLOCATION_COLUMN_CONFIG)
     st.caption(
         "Model: each channel follows a diminishing-return curve anchored at its historical spend share, with "
         "saturation depth from the data's diminishing-return index. Actions compare the recommended share with "
-        "the historical share; 'Limit (target)' means the ROAS/CPA targets cap that channel's spend."
+        "the historical share; 'Limit (Target)' means the ROAS/CPA targets cap that channel's spend."
     )
 
 

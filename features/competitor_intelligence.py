@@ -13,6 +13,7 @@ from data_sources.competitor_sources import (
     parse_competitors,
 )
 from data_sources.trend_sources import parse_keywords
+from utils.formatting import display_labels, title_case_columns
 
 
 @st.cache_data(ttl=900, show_spinner=True)
@@ -59,26 +60,26 @@ COMPETITOR_OPTIONS = [
 ]
 # Verticals and categories ad agencies commonly plan against.
 KEYWORD_OPTIONS = [
-    "beauty",
-    "clothing",
-    "consumer products",
-    "education",
-    "finance",
-    "fitness and wellness",
-    "food and beverage",
-    "gaming",
-    "home and furniture",
-    "live event tickets",
-    "luxury",
-    "music",
-    "pets",
-    "retail",
+    "Beauty",
+    "Clothing",
+    "Consumer Products",
+    "Education",
+    "Finance",
+    "Fitness and Wellness",
+    "Food and Beverage",
+    "Gaming",
+    "Home and Furniture",
+    "Live Event Tickets",
+    "Luxury",
+    "Music",
+    "Pets",
+    "Retail",
     "SaaS",
-    "service subscriptions",
-    "sports",
-    "streaming services",
-    "toys",
-    "travel",
+    "Service Subscriptions",
+    "Sports",
+    "Streaming Services",
+    "Toys",
+    "Travel",
 ]
 
 
@@ -95,19 +96,19 @@ def render() -> None:
             help="Brands to search for across the selected sources. Leave empty to run a market scan on the keywords alone.",
         )
         selected_keywords = c2.multiselect(
-            "Keywords or themes",
+            "Keywords or Themes",
             KEYWORD_OPTIONS,
-            default=["sports", "beauty", "education"],
+            default=["Sports", "Beauty", "Education"],
             help="Industry verticals to scan. Combined with each competitor, or searched alone in a market scan.",
         )
         country = c3.selectbox("Market", ["US", "GB", "CA", "AU", "DE", "FR"], index=0)
-        max_items = c3.slider("Items/source", min_value=5, max_value=50, value=15, step=5)
+        max_items = c3.slider("Items/Source", min_value=5, max_value=50, value=15, step=5)
         sources = st.multiselect(
             "Sources",
             ["Meta Ad Library", "TikTok Creative Center", "YouTube", "Reddit", "GDELT"],
             default=["Meta Ad Library", "TikTok Creative Center", "Reddit", "GDELT"],
         )
-        submitted = st.form_submit_button("Refresh competitor intelligence")
+        submitted = st.form_submit_button("Refresh Competitor Intelligence")
 
     if not submitted:
         st.info(
@@ -154,8 +155,8 @@ def render() -> None:
 
 
 def _render_status(statuses: pd.DataFrame, expanded: bool = False) -> None:
-    with st.expander("Source status and access notes", expanded=expanded):
-        st.dataframe(statuses, use_container_width=True, hide_index=True)
+    with st.expander("Source Status and Access Notes", expanded=expanded):
+        st.dataframe(title_case_columns(statuses), use_container_width=True, hide_index=True)
 
 
 def _render_charts(sov: pd.DataFrame, patterns: pd.DataFrame) -> None:
@@ -168,10 +169,11 @@ def _render_charts(sov: pd.DataFrame, patterns: pd.DataFrame) -> None:
         y="share_of_voice",
         color="source",
         barmode="group",
-        title="Share of voice by source",
+        title="Share of Voice by Source",
         hover_data={"items": True, "share_of_voice": ":.1%"},
+        labels=display_labels(["competitor", "share_of_voice", "source", "items"]),
     )
-    sov_fig.update_layout(yaxis_tickformat=".0%", yaxis_title="share of voice", legend_title_text="source")
+    sov_fig.update_layout(yaxis_tickformat=".0%")
     c1.plotly_chart(sov_fig, use_container_width=True)
 
     patterns_fig = px.bar(
@@ -179,21 +181,21 @@ def _render_charts(sov: pd.DataFrame, patterns: pd.DataFrame) -> None:
         x="theme",
         y="items",
         color="cta",
-        title="Creative themes and CTA patterns",
+        title="Creative Themes and CTA Patterns",
         hover_data={"competitor": True},
+        labels=display_labels(["theme", "items", "cta", "competitor"]),
     )
     patterns_fig.update_xaxes(categoryorder="total descending")
-    patterns_fig.update_layout(legend_title_text="CTA")
     c2.plotly_chart(patterns_fig, use_container_width=True)
 
     st.markdown("#### Creative Pattern Table")
     st.dataframe(
-        patterns,
+        title_case_columns(patterns),
         use_container_width=True,
         hide_index=True,
         column_config={
-            "items": st.column_config.NumberColumn("items", format="%d"),
-            "avg_sentiment": st.column_config.NumberColumn("avg_sentiment", format="%.2f", help="VADER compound score from -1 (negative) to +1 (positive)."),
+            "Items": st.column_config.NumberColumn("Items", format="%d"),
+            "Avg Sentiment": st.column_config.NumberColumn("Avg Sentiment", format="%.2f", help="VADER compound score from -1 (negative) to +1 (positive)."),
         },
     )
 
@@ -205,12 +207,12 @@ def _render_items(items: pd.DataFrame) -> None:
     st.caption("Live-search link rows open platform search results directly; they are not counted in the charts above.")
     display = items.sort_values("published_at", ascending=False)[["source", "competitor", "keyword", "asset_type", "title", "theme", "cta", "published_at", "url"]].head(300)
     st.dataframe(
-        display,
+        title_case_columns(display),
         use_container_width=True,
         hide_index=True,
         column_config={
-            "url": st.column_config.LinkColumn("url", display_text="Open"),
-            "published_at": st.column_config.DatetimeColumn("published_at", format="YYYY-MM-DD HH:mm"),
+            "URL": st.column_config.LinkColumn("URL", display_text="Open"),
+            "Published At": st.column_config.DatetimeColumn("Published At", format="YYYY-MM-DD HH:mm"),
         },
     )
 
