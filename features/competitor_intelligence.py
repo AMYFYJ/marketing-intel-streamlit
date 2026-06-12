@@ -5,7 +5,6 @@ import plotly.express as px
 import streamlit as st
 
 from data_sources.competitor_sources import (
-    LIVE_LINK_ASSET_TYPE,
     CompetitorQuery,
     analyze_creative_patterns,
     compute_share_of_voice,
@@ -96,8 +95,9 @@ def render() -> None:
     youtube_key = _get_secret("YOUTUBE_API_KEY")
     items, statuses = _cached_competitor_intelligence(competitors, keywords, country, max_items, tuple(sources), meta_token, meta_version, youtube_key)
 
+    # Live-search link rows stay visible in the items table (as on main) but
+    # are excluded from share-of-voice and creative-pattern analytics.
     real_items = exclude_live_link_rows(items)
-    live_links = items[items["asset_type"] == LIVE_LINK_ASSET_TYPE] if not items.empty else items
 
     _render_status(statuses, expanded=real_items.empty)
     if real_items.empty:
@@ -110,14 +110,13 @@ def render() -> None:
             )
         else:
             st.warning("No competitor ads or mentions were returned. Broaden keywords, or use the live search links below.")
-        _render_live_links(live_links)
+        _render_items(items)
         return
 
     sov = compute_share_of_voice(real_items)
     patterns = analyze_creative_patterns(real_items)
     _render_charts(sov, patterns)
-    _render_items(real_items)
-    _render_live_links(live_links)
+    _render_items(items)
 
 
 def _render_status(statuses: pd.DataFrame, expanded: bool = False) -> None:
@@ -128,34 +127,57 @@ def _render_status(statuses: pd.DataFrame, expanded: bool = False) -> None:
 def _render_charts(sov: pd.DataFrame, patterns: pd.DataFrame) -> None:
     st.markdown("#### Competitive Signal Mix")
     c1, c2 = st.columns(2)
-    c1.plotly_chart(px.bar(sov, x="competitor", y="share_of_voice", color="source", title="Share of voice by source"), use_container_width=True)
-    c2.plotly_chart(px.bar(patterns.head(30), x="theme", y="items", color="cta", title="Creative themes and CTA patterns"), use_container_width=True)
+
+    sov_fig = px.bar(
+        sov,
+        x="competitor",
+        y="share_of_voice",
+        color="source",
+        barmode="group",
+        title="Share of voice by source",
+        hover_data={"items": True, "share_of_voice": ":.1%"},
+    )
+    sov_fig.update_layout(yaxis_tickformat=".0%", yaxis_title="share of voice", legend_title_text="source")
+    c1.plotly_chart(sov_fig, use_container_width=True)
+
+    patterns_fig = px.bar(
+        patterns.head(30),
+        x="theme",
+        y="items",
+        color="cta",
+        title="Creative themes and CTA patterns",
+        hover_data={"competitor": True},
+    )
+    patterns_fig.update_xaxes(categoryorder="total descending")
+    patterns_fig.update_layout(legend_title_text="CTA")
+    c2.plotly_chart(patterns_fig, use_container_width=True)
+
     st.markdown("#### Creative Pattern Table")
-    st.dataframe(patterns, use_container_width=True, hide_index=True)
+    st.dataframe(
+        patterns,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "items": st.column_config.NumberColumn("items", format="%d"),
+            "avg_sentiment": st.column_config.NumberColumn("avg_sentiment", format="%.2f", help="VADER compound score from -1 (negative) to +1 (positive)."),
+        },
+    )
 
 
 def _render_items(items: pd.DataFrame) -> None:
-    st.markdown("#### Latest Ads and Mentions")
+    if items.empty:
+        return
+    st.markdown("#### Latest Ads, Links, and Mentions")
+    st.caption("Live-search link rows open platform search results directly; they are not counted in the charts above.")
     display = items.sort_values("published_at", ascending=False)[["source", "competitor", "keyword", "asset_type", "title", "theme", "cta", "published_at", "url"]].head(300)
     st.dataframe(
         display,
         use_container_width=True,
         hide_index=True,
-        column_config={"url": st.column_config.LinkColumn("url", display_text="Open")},
-    )
-
-
-def _render_live_links(live_links: pd.DataFrame) -> None:
-    if live_links.empty:
-        return
-    st.markdown("#### Live Creative Search")
-    st.caption("These open live search results on platforms without API access. They are excluded from the charts and tables above.")
-    display = live_links[["source", "competitor", "keyword", "url"]].drop_duplicates()
-    st.dataframe(
-        display,
-        use_container_width=True,
-        hide_index=True,
-        column_config={"url": st.column_config.LinkColumn("url", display_text="Open live search")},
+        column_config={
+            "url": st.column_config.LinkColumn("url", display_text="Open"),
+            "published_at": st.column_config.DatetimeColumn("published_at", format="YYYY-MM-DD HH:mm"),
+        },
     )
 
 
