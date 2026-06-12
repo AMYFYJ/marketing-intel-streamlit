@@ -4,6 +4,7 @@ import pandas as pd
 
 from data_sources.competitor_sources import (
     LIVE_LINK_ASSET_TYPE,
+    MARKET_SCAN_LABEL,
     CompetitorQuery,
     analyze_creative_patterns,
     compute_share_of_voice,
@@ -155,6 +156,18 @@ def test_fetch_competitor_intelligence_combines_link_sources() -> None:
     assert set(items["asset_type"]) == {LIVE_LINK_ASSET_TYPE}
     assert set(statuses["source"]) == {"Meta Ad Library", "TikTok Creative Center"}
     assert set(items["competitor"]) == {"Acme"}
+
+
+def test_fetch_competitor_intelligence_market_scan_without_competitors() -> None:
+    items, statuses = fetch_competitor_intelligence(
+        CompetitorQuery(competitors=(), keywords=("retail media", "influencer marketing"), max_items_per_source=5),
+        sources=("TikTok Creative Center",),
+    )
+
+    assert len(items) == 2
+    assert set(items["competitor"]) == {MARKET_SCAN_LABEL}
+    assert set(items["keyword"]) == {"retail media", "influencer marketing"}
+    assert len(statuses) == 2
 
 
 def test_fetch_competitor_intelligence_without_token_returns_meta_link() -> None:

@@ -35,31 +35,44 @@ def _cached_competitor_intelligence(
     )
 
 
+# Recognizable advertisers across the verticals the app models; type in the
+# selector to filter. Leaving the selector empty runs a keyword market scan.
 COMPETITOR_OPTIONS = [
-    "HubSpot",
-    "Salesforce",
-    "Klaviyo",
-    "Mailchimp",
-    "Braze",
-    "Adobe Marketo",
-    "ActiveCampaign",
-    "Iterable",
-    "Attentive",
-    "Intercom",
-    "Zoho",
-    "Pipedrive",
+    # Retail and ecommerce
+    "Amazon", "Walmart", "Target", "Temu", "Shein", "Etsy", "Wayfair", "IKEA",
+    # Apparel and fitness
+    "Nike", "Adidas", "Lululemon", "Gymshark", "On Running", "Alo Yoga", "Peloton", "Whoop",
+    # Beauty
+    "Sephora", "Ulta Beauty", "Glossier", "e.l.f. Beauty", "Fenty Beauty", "Rare Beauty",
+    # Finance and fintech
+    "American Express", "Capital One", "Chime", "Robinhood", "Coinbase", "Klarna", "SoFi",
+    # Travel and hospitality
+    "Booking.com", "Expedia", "Airbnb", "Hopper", "Kayak", "Marriott",
+    # Food and delivery
+    "McDonald's", "Chipotle", "DoorDash", "Uber Eats", "HelloFresh", "Liquid Death",
+    # Education and entertainment
+    "Duolingo", "Coursera", "MasterClass", "Netflix", "Spotify", "Roblox",
+    # D2C and telecom
+    "Casper", "Warby Parker", "Hims", "Mint Mobile",
+    # SaaS and martech
+    "HubSpot", "Salesforce", "Klaviyo", "Mailchimp", "Braze", "Adobe", "Shopify", "Canva", "Notion", "Intercom",
 ]
 KEYWORD_OPTIONS = [
+    "advertising campaign",
+    "influencer marketing",
+    "brand launch",
+    "social media campaign",
+    "retail media",
+    "connected tv advertising",
+    "holiday shopping",
+    "user generated content",
+    "loyalty program",
+    "personalization",
+    "ecommerce marketing",
     "marketing automation",
     "customer data",
     "email campaigns",
     "artificial intelligence marketing",
-    "personalization",
-    "customer engagement",
-    "lead generation",
-    "loyalty program",
-    "ecommerce marketing",
-    "analytics",
 ]
 
 
@@ -69,8 +82,13 @@ def render() -> None:
 
     with st.form("competitor_controls"):
         c1, c2, c3 = st.columns([2, 2, 1])
-        selected_competitors = c1.multiselect("Competitors", COMPETITOR_OPTIONS, default=["HubSpot", "Salesforce", "Klaviyo"])
-        selected_keywords = c2.multiselect("Keywords or themes", KEYWORD_OPTIONS, default=["marketing automation", "customer data", "email campaigns"])
+        selected_competitors = c1.multiselect(
+            "Competitors",
+            COMPETITOR_OPTIONS,
+            default=["Nike", "Sephora", "Duolingo"],
+            help="Brands to search for across the selected sources. Leave empty to run a market scan on the keywords alone.",
+        )
+        selected_keywords = c2.multiselect("Keywords or themes", KEYWORD_OPTIONS, default=["advertising campaign", "influencer marketing"])
         country = c3.selectbox("Market", ["US", "GB", "CA", "AU", "DE", "FR"], index=0)
         max_items = c3.slider("Items/source", min_value=5, max_value=50, value=15, step=5)
         sources = st.multiselect(
@@ -81,14 +99,19 @@ def render() -> None:
         submitted = st.form_submit_button("Refresh competitor intelligence")
 
     if not submitted:
-        st.info("Select competitors and refresh. Meta API and YouTube are optional; TikTok Creative Center opens live creative-search links.")
+        st.info(
+            "Select competitors and refresh, or leave competitors empty for a keyword-only market scan. "
+            "Meta API and YouTube are optional; TikTok Creative Center opens live creative-search links."
+        )
         return
 
     competitors = parse_competitors(selected_competitors)
     keywords = parse_keywords(selected_keywords)
-    if not competitors:
-        st.warning("Select at least one competitor.")
+    if not competitors and not keywords:
+        st.warning("Select at least one competitor or keyword.")
         return
+    if not competitors:
+        st.info("No competitors selected — running a market scan on the keywords alone.")
 
     meta_token = _get_secret("META_ACCESS_TOKEN")
     meta_version = _get_secret("META_GRAPH_VERSION") or "v21.0"

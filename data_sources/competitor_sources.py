@@ -30,6 +30,8 @@ THEME_TERMS = {
 }
 
 LIVE_LINK_ASSET_TYPE = "Live search link"
+# Competitor label used when no competitors are selected and keywords run as a market scan.
+MARKET_SCAN_LABEL = "Market scan"
 
 
 def _compile_label_patterns(label_terms: dict[str, tuple[str, ...]]) -> dict[str, re.Pattern[str]]:
@@ -250,6 +252,9 @@ def empty_competitor_frame() -> pd.DataFrame:
 
 
 def _search_terms(query: CompetitorQuery) -> list[tuple[str, str]]:
+    """Competitor x keyword search terms; with no competitors, keywords alone form a market scan."""
+    if not query.competitors:
+        return [(MARKET_SCAN_LABEL, keyword) for keyword in query.keywords if keyword]
     terms: list[tuple[str, str]] = []
     keywords = query.keywords or ("",)
     for competitor in query.competitors:
