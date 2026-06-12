@@ -45,6 +45,36 @@ def detect_channel(text: str) -> str:
             return label
     return NO_CHANNEL_LABEL
 
+
+# Broad single-word verticals are weak search terms; expand them into OR-queries
+# (GDELT and Reddit both support quoted phrases and uppercase OR) for better recall.
+VERTICAL_QUERY_EXPANSIONS = {
+    "beauty": '(beauty OR cosmetics OR skincare OR makeup)',
+    "clothing": '(clothing OR apparel OR fashion)',
+    "consumer products": '("consumer products" OR "consumer goods" OR cpg)',
+    "education": '(education OR edtech OR "online learning")',
+    "finance": '(fintech OR banking OR "personal finance")',
+    "fitness and wellness": '(fitness OR wellness OR gym)',
+    "food and beverage": '("food and beverage" OR restaurants OR snacks)',
+    "gaming": '(gaming OR "video games" OR esports)',
+    "home and furniture": '(furniture OR "home decor" OR "home goods")',
+    "live event tickets": '("concert tickets" OR "event tickets" OR ticketing)',
+    "luxury": '(luxury OR "luxury brands" OR designer)',
+    "music": '(music OR concerts OR musicians)',
+    "pets": '(pets OR "pet food" OR "pet care")',
+    "retail": '(retail OR retailers OR ecommerce)',
+    "saas": '(saas OR "software as a service" OR "cloud software")',
+    "service subscriptions": '(subscriptions OR "subscription service" OR "subscription business")',
+    "sports": '(sports OR athletes OR sportswear)',
+    "streaming services": '("streaming service" OR "streaming platform" OR "video streaming")',
+    "toys": '(toys OR "toy industry" OR "toy brands")',
+    "travel": '(travel OR tourism OR airlines)',
+}
+
+
+def expand_search_query(keyword: str) -> str:
+    return VERTICAL_QUERY_EXPANSIONS.get(str(keyword).strip().lower(), keyword)
+
 _VADER_ANALYZER = None
 
 
@@ -63,6 +93,11 @@ class TrendQuery:
     lookback_days: int = 7
     max_items_per_source: int = 25
     market: str = "US"
+
+
+# Live feeds whose results must respect the lookback window; export files and
+# Meta Ad Library (where long-running active ads are current demand) are exempt.
+WINDOWED_SOURCES = ("GDELT", "Reddit", "YouTube")
 
 
 def parse_keywords(raw: str | Iterable[str]) -> tuple[str, ...]:
@@ -90,16 +125,17 @@ def fetch_demand_pulse(
     statuses: list[dict[str, str]] = []
 
     for keyword in query.keywords:
+        search_query = expand_search_query(keyword)
         if "GDELT" in sources:
-            frame, status = fetch_gdelt(keyword, query.max_items_per_source)
+            frame, status = fetch_gdelt(keyword, query.max_items_per_source, query.lookback_days, search_query=search_query)
             frames.append(frame)
             statuses.append(status)
         if "Reddit" in sources:
-            frame, status = fetch_reddit(keyword, query.max_items_per_source, query.lookback_days)
+            frame, status = fetch_reddit(keyword, query.max_items_per_source, query.lookback_days, search_query=search_query)
             frames.append(frame)
             statuses.append(status)
         if "YouTube" in sources:
-            frame, status = fetch_youtube(keyword, youtube_api_key, query.max_items_per_source)
+            frame, status = fetch_youtube(keyword, youtube_api_key, query.max_items_per_source, query.lookback_days)
             frames.append(frame)
             statuses.append(status)
 
@@ -114,22 +150,48 @@ def fetch_demand_pulse(
 
     non_empty_frames = [frame for frame in frames if not frame.empty]
     combined = pd.concat(non_empty_frames, ignore_index=True) if non_empty_frames else empty_trend_frame()
-    if not combined.empty:
-        combined["published_at"] = pd.to_datetime(combined["published_at"], errors="coerce", utc=True)
-        combined["sentiment"] = combined.apply(lambda row: sentiment_score(f"{row['title']} {row['snippet']}"), axis=1)
-        combined["channel"] = combined.apply(lambda row: detect_channel(f"{row['title']} {row['snippet']}"), axis=1)
-        combined["recency_hours"] = (pd.Timestamp.now(tz="UTC") - combined["published_at"]).dt.total_seconds() / 3600
-        combined["recency_hours"] = combined["recency_hours"].clip(lower=0).fillna(query.lookback_days * 24)
+    combined = enrich_trend_items(combined, query.lookback_days)
+    combined = filter_to_lookback(combined, query.lookback_days)
     return combined, pd.DataFrame(statuses)
 
 
-def fetch_gdelt(keyword: str, max_records: int = 25, request_get: Callable[..., object] = requests.get) -> tuple[pd.DataFrame, dict[str, str]]:
+def enrich_trend_items(frame: pd.DataFrame, lookback_days: int) -> pd.DataFrame:
+    """Attach published_at/sentiment/channel/recency columns to raw trend rows."""
+    if frame.empty:
+        return frame
+    enriched = frame.copy()
+    enriched["published_at"] = pd.to_datetime(enriched["published_at"], errors="coerce", utc=True)
+    enriched["sentiment"] = enriched.apply(lambda row: sentiment_score(f"{row['title']} {row['snippet']}"), axis=1)
+    enriched["channel"] = enriched.apply(lambda row: detect_channel(f"{row['title']} {row['snippet']}"), axis=1)
+    enriched["recency_hours"] = (pd.Timestamp.now(tz="UTC") - enriched["published_at"]).dt.total_seconds() / 3600
+    enriched["recency_hours"] = enriched["recency_hours"].clip(lower=0).fillna(lookback_days * 24)
+    return enriched
+
+
+def filter_to_lookback(frame: pd.DataFrame, lookback_days: int) -> pd.DataFrame:
+    """Drop live-feed rows older than the lookback window so charts honor it."""
+    if frame.empty:
+        return frame
+    windowed = frame["source"].isin(WINDOWED_SOURCES)
+    within = frame["recency_hours"] <= lookback_days * 24
+    return frame[~windowed | within].reset_index(drop=True)
+
+
+def fetch_gdelt(
+    keyword: str,
+    max_records: int = 25,
+    lookback_days: int = 7,
+    search_query: str | None = None,
+    request_get: Callable[..., object] = requests.get,
+) -> tuple[pd.DataFrame, dict[str, str]]:
     url = "https://api.gdeltproject.org/api/v2/doc/doc"
     params = {
-        "query": keyword,
+        "query": search_query or keyword,
         "mode": "ArtList",
         "format": "json",
-        "maxrecords": max_records,
+        "maxrecords": min(max_records, 250),
+        # Restrict results to the lookback window so volume charts reflect it.
+        "timespan": f"{max(int(lookback_days), 1)}d",
         "sort": "HybridRel",
     }
     try:
@@ -162,9 +224,10 @@ def fetch_gdelt(keyword: str, max_records: int = 25, request_get: Callable[..., 
     return pd.DataFrame(rows, columns=empty_trend_frame().columns), _status("GDELT", keyword, "ok", f"{len(rows)} articles")
 
 
-def fetch_reddit(keyword: str, max_records: int = 25, lookback_days: int = 7) -> tuple[pd.DataFrame, dict[str, str]]:
-    encoded = quote_plus(keyword)
-    url = f"https://www.reddit.com/search.rss?q={encoded}&sort=new&t=week"
+def fetch_reddit(keyword: str, max_records: int = 25, lookback_days: int = 7, search_query: str | None = None) -> tuple[pd.DataFrame, dict[str, str]]:
+    encoded = quote_plus(search_query or keyword)
+    window = "day" if lookback_days <= 1 else ("week" if lookback_days <= 7 else "month")
+    url = f"https://www.reddit.com/search.rss?q={encoded}&sort=new&t={window}&limit={min(max_records, 100)}"
     try:
         feed = feedparser.parse(url, request_headers={"User-Agent": "marketing-intel-streamlit/1.0"})
         entries = feed.entries[:max_records]
@@ -194,15 +257,17 @@ def fetch_reddit(keyword: str, max_records: int = 25, lookback_days: int = 7) ->
     return pd.DataFrame(rows, columns=empty_trend_frame().columns), _status("Reddit", keyword, "ok", f"{len(rows)} posts")
 
 
-def fetch_youtube(keyword: str, api_key: str | None, max_records: int = 25, request_get: Callable[..., object] = requests.get) -> tuple[pd.DataFrame, dict[str, str]]:
+def fetch_youtube(keyword: str, api_key: str | None, max_records: int = 25, lookback_days: int = 7, request_get: Callable[..., object] = requests.get) -> tuple[pd.DataFrame, dict[str, str]]:
     if not api_key:
         return empty_trend_frame(), _status("YouTube", keyword, "not configured", "Set YOUTUBE_API_KEY in Streamlit secrets")
     url = "https://www.googleapis.com/youtube/v3/search"
+    published_after = (pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=max(int(lookback_days), 1))).strftime("%Y-%m-%dT%H:%M:%SZ")
     params = {
         "part": "snippet",
         "q": keyword,
         "type": "video",
         "order": "date",
+        "publishedAfter": published_after,
         "maxResults": min(max_records, 50),
         "key": api_key,
     }

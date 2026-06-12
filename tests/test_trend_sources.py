@@ -7,9 +7,11 @@ from data_sources.trend_sources import (
     TrendQuery,
     compute_trend_summary,
     detect_channel,
+    expand_search_query,
     fetch_demand_pulse,
     fetch_gdelt,
     fetch_youtube,
+    filter_to_lookback,
     parse_keywords,
     recommend_campaign_angles,
     sentiment_score,
@@ -33,16 +35,42 @@ def test_parse_keywords_deduplicates_and_strips() -> None:
     assert parse_keywords("AI marketing, retail media\nAI marketing") == ("AI marketing", "retail media")
 
 
-def test_fetch_gdelt_parses_articles() -> None:
-    def fake_get(*args, **kwargs):
+def test_fetch_gdelt_parses_articles_and_restricts_to_lookback() -> None:
+    captured = {}
+
+    def fake_get(url, params=None, **kwargs):
+        captured.update(params or {})
         return FakeResponse({"articles": [{"title": "AI marketing growth", "url": "https://example.com", "seendate": "20260101120000", "domain": "example.com"}]})
 
-    frame, status = fetch_gdelt("AI marketing", request_get=fake_get)
+    frame, status = fetch_gdelt("AI marketing", max_records=500, lookback_days=14, request_get=fake_get)
 
     assert status["status"] == "ok"
     assert len(frame) == 1
     assert frame.loc[0, "source"] == "GDELT"
     assert frame.loc[0, "keyword"] == "AI marketing"
+    assert captured["timespan"] == "14d"
+    assert captured["maxrecords"] == 250  # GDELT hard cap
+
+
+def test_expand_search_query_broadens_verticals() -> None:
+    assert "cosmetics" in expand_search_query("Beauty")
+    assert "OR" in expand_search_query("retail")
+    # Unknown keywords pass through unchanged.
+    assert expand_search_query("pickleball gear") == "pickleball gear"
+
+
+def test_filter_to_lookback_drops_stale_live_rows_only() -> None:
+    frame = pd.DataFrame(
+        {
+            "source": ["GDELT", "Reddit", "Google Trends export", "Meta Ad Library"],
+            "recency_hours": [300.0, 12.0, 999.0, 999.0],
+        }
+    )
+
+    kept = filter_to_lookback(frame, lookback_days=7)
+
+    # Stale GDELT row dropped; fresh Reddit kept; exports and Meta ads exempt.
+    assert set(kept["source"]) == {"Reddit", "Google Trends export", "Meta Ad Library"}
 
 
 def test_fetch_youtube_requires_key_and_parses_results() -> None:

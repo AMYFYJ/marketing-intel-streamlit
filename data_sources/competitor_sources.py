@@ -86,7 +86,7 @@ def fetch_competitor_intelligence(
             frames.append(frame)
             statuses.append(status)
         if "YouTube" in sources:
-            trend_frame, status = fetch_youtube(term, youtube_api_key, query.max_items_per_source)
+            trend_frame, status = fetch_youtube(term, youtube_api_key, query.max_items_per_source, lookback_days=30)
             frames.append(_trend_to_competitor_frame(trend_frame, competitor, "Video"))
             statuses.append(status)
         if "Reddit" in sources:

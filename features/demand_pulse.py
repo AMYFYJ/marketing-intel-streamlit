@@ -4,9 +4,15 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from data_sources.competitor_sources import (
+    LIVE_LINK_ASSET_TYPE,
+    fetch_meta_ad_library,
+    fetch_tiktok_creative_center_link,
+)
 from data_sources.trend_sources import (
     TrendQuery,
     compute_trend_summary,
+    enrich_trend_items,
     fetch_demand_pulse,
     parse_keywords,
     recommend_campaign_angles,
@@ -23,12 +29,55 @@ def _cached_demand_pulse(
     max_items_per_source: int,
     sources: tuple[str, ...],
     youtube_api_key: str | None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    return fetch_demand_pulse(
+    meta_access_token: str | None,
+    meta_api_version: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    items, statuses = fetch_demand_pulse(
         TrendQuery(keywords=keywords, lookback_days=lookback_days, max_items_per_source=max_items_per_source),
         sources=sources,
         youtube_api_key=youtube_api_key,
     )
+    status_rows = statuses.to_dict("records") if not statuses.empty else []
+    ad_frames: list[pd.DataFrame] = []
+    link_rows: list[dict[str, str]] = []
+
+    for keyword in keywords:
+        if "Meta Ad Library" in sources:
+            frame, status = fetch_meta_ad_library(
+                keyword,
+                competitor=keyword,
+                access_token=meta_access_token,
+                api_version=meta_api_version,
+                max_records=max_items_per_source,
+            )
+            status_rows.append(status)
+            ads = frame[frame["asset_type"] != LIVE_LINK_ASSET_TYPE]
+            if not ads.empty:
+                ad_frames.append(
+                    pd.DataFrame(
+                        {
+                            "source": "Meta Ad Library",
+                            "keyword": keyword,
+                            "title": ads["title"],
+                            "url": ads["url"],
+                            "published_at": ads["published_at"],
+                            "snippet": ads["text"],
+                            "author": ads["author"],
+                            "engagement": 0.0,
+                        }
+                    )
+                )
+            for _, link in frame[frame["asset_type"] == LIVE_LINK_ASSET_TYPE].iterrows():
+                link_rows.append({"source": "Meta Ad Library", "keyword": keyword, "url": link["url"]})
+        if "TikTok Creative Center" in sources:
+            frame, status = fetch_tiktok_creative_center_link(keyword, keyword)
+            status_rows.append(status)
+            link_rows.append({"source": "TikTok Creative Center", "keyword": keyword, "url": frame.loc[0, "url"]})
+
+    if ad_frames:
+        meta_items = enrich_trend_items(pd.concat(ad_frames, ignore_index=True), lookback_days)
+        items = pd.concat([items, meta_items], ignore_index=True) if not items.empty else meta_items
+    return items, pd.DataFrame(status_rows), pd.DataFrame(link_rows)
 
 
 def render() -> None:
@@ -44,24 +93,27 @@ def render() -> None:
             help="Each vertical is searched across the selected sources; the dashboards then break results down by marketing channel automatically.",
         )
         lookback_days = c2.slider("Lookback Days", min_value=1, max_value=30, value=7)
-        max_items = c3.slider("Items per Source", min_value=5, max_value=50, value=20, step=5)
+        max_items = c3.slider("Items per Source", min_value=10, max_value=100, value=50, step=10)
         sources = st.multiselect(
             "Sources",
-            ["GDELT", "Reddit", "YouTube", "Google Trends export", "Pinterest export"],
-            default=["GDELT", "Reddit"],
+            ["GDELT", "Reddit", "Meta Ad Library", "TikTok Creative Center", "YouTube", "Google Trends export", "Pinterest export"],
+            default=["GDELT", "Reddit", "Meta Ad Library", "TikTok Creative Center"],
+            help="GDELT, Reddit, and TikTok need no keys. Meta Ad Library needs META_ACCESS_TOKEN; YouTube needs YOUTUBE_API_KEY. The export sources read CSV files from data/.",
         )
         submitted = st.form_submit_button("Refresh Live Demand Signals")
 
     keywords = parse_keywords(selected_keywords)
     if not submitted:
-        st.info("Pick industry verticals and refresh to fetch cached live demand signals. GDELT and Reddit need no API key; YouTube needs `YOUTUBE_API_KEY` in Streamlit secrets.")
+        st.info("Pick industry verticals and refresh to fetch cached live demand signals. GDELT and Reddit need no API key; Meta Ad Library and YouTube use Streamlit secrets.")
         return
     if not keywords:
         st.warning("Select at least one industry vertical.")
         return
 
     youtube_key = _get_secret("YOUTUBE_API_KEY")
-    items, statuses = _cached_demand_pulse(keywords, lookback_days, max_items, tuple(sources), youtube_key)
+    meta_token = _get_secret("META_ACCESS_TOKEN")
+    meta_version = _get_secret("META_GRAPH_VERSION") or "v21.0"
+    items, statuses, live_links = _cached_demand_pulse(keywords, lookback_days, max_items, tuple(sources), youtube_key, meta_token, meta_version)
     _render_status(statuses, expanded=items.empty)
     if items.empty:
         failed = statuses[statuses["status"] == "failed"] if not statuses.empty else pd.DataFrame()
@@ -73,12 +125,14 @@ def render() -> None:
             )
         else:
             st.warning("All sources responded but returned no items. Try broader keywords or a longer lookback.")
+        _render_live_links(live_links)
         return
 
     summary = compute_trend_summary(items, lookback_days=lookback_days)
     angles = recommend_campaign_angles(summary, items)
     _render_summary(items, summary, angles)
     _render_items(items)
+    _render_live_links(live_links)
 
 
 def _render_status(statuses: pd.DataFrame, expanded: bool = False) -> None:
@@ -183,6 +237,19 @@ def _render_items(items: pd.DataFrame) -> None:
             "Sentiment": st.column_config.NumberColumn("Sentiment", format="%.2f"),
             "Published At": st.column_config.DatetimeColumn("Published At", format="YYYY-MM-DD HH:mm"),
         },
+    )
+
+
+def _render_live_links(live_links: pd.DataFrame) -> None:
+    if live_links.empty:
+        return
+    st.markdown("#### Live Creative Search")
+    st.caption("Direct links into Meta Ad Library and TikTok Creative Center for each vertical; they are not counted in the charts above.")
+    st.dataframe(
+        title_case_columns(live_links.drop_duplicates()),
+        use_container_width=True,
+        hide_index=True,
+        column_config={"URL": st.column_config.LinkColumn("URL", display_text="Open live search")},
     )
 
 
