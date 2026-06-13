@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 import requests
 
+from data_sources.api_errors import response_error_detail, strip_query_strings
+
 # Momentum thresholds for the recent-vs-earlier mention comparison (percent).
 ACCELERATING_THRESHOLD = 25.0
 COOLING_THRESHOLD = -25.0
@@ -296,10 +298,14 @@ def fetch_youtube(keyword: str, api_key: str | None, max_records: int = 25, look
     }
     try:
         response = request_get(url, params=params, timeout=12)
+        status_code = getattr(response, "status_code", 200)
+        if status_code >= 400:
+            # Surface the API's own explanation; never echo the request URL, which carries the API key.
+            return empty_trend_frame(), _status("YouTube", keyword, "failed", response_error_detail(response, status_code))
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:  # pragma: no cover
-        return empty_trend_frame(), _status("YouTube", keyword, "failed", str(exc))
+        return empty_trend_frame(), _status("YouTube", keyword, "failed", strip_query_strings(str(exc)))
 
     rows = []
     for item in payload.get("items", [])[:max_records]:

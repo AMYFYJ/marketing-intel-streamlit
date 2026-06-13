@@ -9,6 +9,7 @@ from urllib.parse import quote_plus
 import pandas as pd
 import requests
 
+from data_sources.api_errors import response_error_detail, strip_query_strings
 from data_sources.trend_sources import fetch_gdelt, fetch_reddit, fetch_youtube, parse_keywords, sentiment_score
 
 CTA_PATTERNS = {
@@ -116,6 +117,12 @@ def fetch_competitor_intelligence(
     return combined, pd.DataFrame(statuses)
 
 
+def _coverage_hint(detail: str, country: str) -> str:
+    if country.upper() in META_FULL_COVERAGE_COUNTRIES:
+        return detail
+    return f"{detail}. {META_US_COVERAGE_NOTE}"
+
+
 def fetch_meta_ad_library(
     search_term: str,
     competitor: str,
@@ -161,13 +168,13 @@ def fetch_meta_ad_library(
         status_code = getattr(response, "status_code", 200)
         if status_code == 429:
             return empty_competitor_frame(), _status("Meta Ad Library", search_term, "rate limited", "Meta API returned 429")
+        if status_code >= 400:
+            # Surface Meta's own explanation; never echo the request URL, which carries the access token.
+            return empty_competitor_frame(), _status("Meta Ad Library", search_term, "failed", _coverage_hint(response_error_detail(response, status_code), country))
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:  # pragma: no cover
-        detail = str(exc)
-        if country.upper() not in META_FULL_COVERAGE_COUNTRIES:
-            detail = f"{detail}. {META_US_COVERAGE_NOTE}"
-        return empty_competitor_frame(), _status("Meta Ad Library", search_term, "failed", detail)
+        return empty_competitor_frame(), _status("Meta Ad Library", search_term, "failed", _coverage_hint(strip_query_strings(str(exc)), country))
 
     rows = []
     for ad in payload.get("data", [])[:max_records]:

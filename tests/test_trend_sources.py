@@ -217,3 +217,14 @@ def test_fetch_demand_pulse_handles_all_empty_sources(tmp_path) -> None:
 
     assert items.empty
     assert statuses.loc[0, "status"] == "not configured"
+
+
+def test_fetch_youtube_error_uses_response_message_and_hides_key() -> None:
+    error_payload = {"error": {"code": 403, "message": "The request is missing a valid API key."}}
+
+    frame, status = fetch_youtube("ads", "SECRET-KEY", request_get=lambda *a, **k: FakeResponse(error_payload, status_code=403))
+
+    assert frame.empty
+    assert status["status"] == "failed"
+    assert "missing a valid API key" in status["detail"]
+    assert "SECRET-KEY" not in status["detail"]

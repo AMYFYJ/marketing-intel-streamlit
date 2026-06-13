@@ -200,3 +200,34 @@ def test_fetch_competitor_intelligence_without_token_returns_meta_link() -> None
     assert len(items) == 1
     assert items.loc[0, "asset_type"] == LIVE_LINK_ASSET_TYPE
     assert statuses.loc[0, "status"] == "not configured"
+
+
+def test_meta_ad_library_error_uses_response_message_and_hides_token() -> None:
+    class ErrorResponse:
+        status_code = 400
+
+        def raise_for_status(self) -> None:  # pragma: no cover - short-circuited by the status check
+            raise AssertionError("raise_for_status should not be reached")
+
+        def json(self) -> dict:
+            return {"error": {"message": "Error validating access token: session has expired", "type": "OAuthException", "code": 190}}
+
+    frame, status = fetch_meta_ad_library("Beauty", "Beauty", access_token="SECRET-TOKEN", country="US", request_get=lambda *a, **k: ErrorResponse())
+
+    assert frame.empty
+    assert status["status"] == "failed"
+    assert "HTTP 400 (OAuthException code 190)" in status["detail"]
+    assert "session has expired" in status["detail"]
+    assert "SECRET-TOKEN" not in status["detail"]
+    assert "EU markets" in status["detail"]
+
+
+def test_meta_ad_library_exception_detail_drops_query_string() -> None:
+    def raising_get(*args, **kwargs):
+        raise RuntimeError("Max retries exceeded with url: /v21.0/ads_archive?access_token=SECRET-TOKEN&search_terms=x")
+
+    _, status = fetch_meta_ad_library("Beauty", "Beauty", access_token="SECRET-TOKEN", country="DE", request_get=raising_get)
+
+    assert status["status"] == "failed"
+    assert "ads_archive" in status["detail"]
+    assert "SECRET-TOKEN" not in status["detail"]
