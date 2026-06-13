@@ -37,6 +37,19 @@ PLATFORM_OBJECTIVE_FIT: dict[tuple[str, str], float] = {
 
 DEFAULT_SYNTHETIC_ROWS = 250_000
 
+# Relative market depth: how many multiples of a platform's median spend it can
+# absorb before saturating. Differentiates diminishing-return behavior by channel.
+PLATFORM_SATURATION_DEPTH = {
+    "Google": 8.0,
+    "Meta": 7.0,
+    "YouTube": 5.5,
+    "TikTok": 4.5,
+    "LinkedIn": 3.5,
+    "Pinterest": 3.0,
+    "Snapchat": 2.5,
+    "Reddit": 2.5,
+}
+
 
 @dataclass(frozen=True)
 class ChannelBenchmark:
@@ -51,7 +64,7 @@ class ChannelBenchmark:
 
 
 def build_channel_benchmarks(calibration_frame: pd.DataFrame | None = None) -> pd.DataFrame:
-    source = calibration_frame if calibration_frame is not None else generate_campaign_sample(rows=10_000, seed=42)
+    source = calibration_frame if calibration_frame is not None else generate_campaign_sample(rows=30_000, seed=42)
     source = recompute_metrics(source)
     total_spend = max(float(source["spend"].sum()), 1.0)
 
@@ -108,7 +121,8 @@ def generate_synthetic_media_mix(
     spend = bench["median_spend"].to_numpy(dtype=float) * tier_multiplier * seasonality * rng.lognormal(0, 0.50, rows)
     spend = np.clip(spend, 50, 125_000).round(2)
 
-    saturation = 1 / (1 + np.power(spend / np.maximum(bench["median_spend"].to_numpy(dtype=float) * 4.5, 1), 0.72))
+    saturation_depth = pd.Series(platform).map(PLATFORM_SATURATION_DEPTH).fillna(4.0).to_numpy(dtype=float)
+    saturation = 1 / (1 + np.power(spend / np.maximum(bench["median_spend"].to_numpy(dtype=float) * saturation_depth, 1), 0.72))
     diminishing_return_index = np.clip(saturation + rng.normal(0, 0.03, rows), 0.18, 1.05)
 
     cpm = bench["cpm"].to_numpy(dtype=float) * rng.lognormal(0, 0.18, rows) * np.where(device == "Desktop", 1.12, 1.0)

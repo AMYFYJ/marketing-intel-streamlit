@@ -1,17 +1,93 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 from urllib.parse import quote_plus
 
+import re
+
 import feedparser
+import numpy as np
 import pandas as pd
 import requests
 
-POSITIVE_WORDS = {"growth", "launch", "win", "best", "viral", "increase", "strong", "new", "popular", "opportunity", "breakthrough"}
-NEGATIVE_WORDS = {"drop", "decline", "bad", "risk", "problem", "complaint", "down", "weak", "expensive", "delay", "controversy"}
+from data_sources.api_errors import response_error_detail, strip_query_strings
+
+# Momentum thresholds for the recent-vs-earlier mention comparison (percent).
+ACCELERATING_THRESHOLD = 25.0
+COOLING_THRESHOLD = -25.0
+
+# Marketing channels detected in fetched items (first match wins, most specific
+# first) so dashboards can break demand down by channel without user input.
+CHANNEL_TERMS = {
+    "Retail Media": ("retail media",),
+    "Connected TV": ("connected tv", "ctv", "streaming ads", "streaming advertising", "addressable tv"),
+    "Influencer Marketing": ("influencer", "influencers", "creator marketing", "creator economy"),
+    "Paid Social": ("paid social", "social ads", "social advertising", "tiktok ads", "instagram ads", "facebook ads", "meta ads"),
+    "Paid Search": ("paid search", "search ads", "search advertising", "google ads", "ppc"),
+    "Email Marketing": ("email marketing", "email campaign", "email campaigns", "newsletter"),
+    "Affiliate Marketing": ("affiliate", "affiliates"),
+    "Out of Home": ("out of home", "billboard", "billboards", "ooh advertising"),
+    "Podcast Advertising": ("podcast", "podcasts"),
+}
+NO_CHANNEL_LABEL = "No Channel Mention"
+
+_CHANNEL_REGEXES = {
+    label: re.compile(r"\b(?:" + "|".join(re.escape(term) for term in terms) + r")\b")
+    for label, terms in CHANNEL_TERMS.items()
+}
+
+
+def detect_channel(text: str) -> str:
+    lowered = str(text).lower()
+    for label, regex in _CHANNEL_REGEXES.items():
+        if regex.search(lowered):
+            return label
+    return NO_CHANNEL_LABEL
+
+
+# Broad single-word verticals are weak search terms; expand them into OR-queries
+# (GDELT and Reddit both support quoted phrases and uppercase OR) for better recall.
+VERTICAL_QUERY_EXPANSIONS = {
+    "beauty": '(beauty OR cosmetics OR skincare OR makeup)',
+    "clothing": '(clothing OR apparel OR fashion)',
+    "consumer products": '("consumer products" OR "consumer goods" OR cpg)',
+    "education": '(education OR edtech OR "online learning")',
+    "finance": '(fintech OR banking OR "personal finance")',
+    "fitness and wellness": '(fitness OR wellness OR gym)',
+    "food and beverage": '("food and beverage" OR restaurants OR snacks)',
+    "gaming": '(gaming OR "video games" OR esports)',
+    "home and furniture": '(furniture OR "home decor" OR "home goods")',
+    "live event tickets": '("concert tickets" OR "event tickets" OR ticketing)',
+    "luxury": '(luxury OR "luxury brands" OR designer)',
+    "music": '(music OR concerts OR musicians)',
+    "pets": '(pets OR "pet food" OR "pet care")',
+    "retail": '(retail OR retailers OR ecommerce)',
+    "saas": '(saas OR "software as a service" OR "cloud software")',
+    "service subscriptions": '(subscriptions OR "subscription service" OR "subscription business")',
+    "sports": '(sports OR athletes OR sportswear)',
+    "streaming services": '("streaming service" OR "streaming platform" OR "video streaming")',
+    "toys": '(toys OR "toy industry" OR "toy brands")',
+    "travel": '(travel OR tourism OR airlines)',
+}
+
+
+def expand_search_query(keyword: str) -> str:
+    return VERTICAL_QUERY_EXPANSIONS.get(str(keyword).strip().lower(), keyword)
+
+_VADER_ANALYZER = None
+
+
+def _vader():
+    global _VADER_ANALYZER
+    if _VADER_ANALYZER is None:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+        _VADER_ANALYZER = SentimentIntensityAnalyzer()
+    return _VADER_ANALYZER
 
 
 @dataclass(frozen=True)
@@ -20,6 +96,11 @@ class TrendQuery:
     lookback_days: int = 7
     max_items_per_source: int = 25
     market: str = "US"
+
+
+# Live feeds whose results must respect the lookback window; export files and
+# Meta Ad Library (where long-running active ads are current demand) are exempt.
+WINDOWED_SOURCES = ("GDELT", "Reddit", "YouTube")
 
 
 def parse_keywords(raw: str | Iterable[str]) -> tuple[str, ...]:
@@ -49,17 +130,19 @@ def fetch_demand_pulse(
     current_time = _coerce_utc_timestamp(now)
 
     for keyword in query.keywords:
+        search_query = expand_search_query(keyword)
         if "GDELT" in sources:
             frame, status = fetch_gdelt(
                 keyword,
                 query.max_items_per_source,
-                lookback_days=query.lookback_days,
+                query.lookback_days,
+                search_query=search_query,
                 now=current_time,
             )
             frames.append(frame)
             statuses.append(status)
         if "Reddit" in sources:
-            frame, status = fetch_reddit(keyword, query.max_items_per_source, query.lookback_days, now=current_time)
+            frame, status = fetch_reddit(keyword, query.max_items_per_source, query.lookback_days, search_query=search_query)
             frames.append(frame)
             statuses.append(status)
         if "YouTube" in sources:
@@ -67,7 +150,7 @@ def fetch_demand_pulse(
                 keyword,
                 youtube_api_key,
                 query.max_items_per_source,
-                lookback_days=query.lookback_days,
+                query.lookback_days,
                 now=current_time,
             )
             frames.append(frame)
@@ -96,36 +179,81 @@ def fetch_demand_pulse(
 
     non_empty_frames = [frame for frame in frames if not frame.empty]
     combined = pd.concat(non_empty_frames, ignore_index=True) if non_empty_frames else empty_trend_frame()
-    if not combined.empty:
-        combined["published_at"] = pd.to_datetime(combined["published_at"], errors="coerce", utc=True)
-        combined = _filter_by_lookback(combined, query.lookback_days, current_time)
-        combined["sentiment"] = combined.apply(lambda row: sentiment_score(f"{row['title']} {row['snippet']}"), axis=1)
-        combined["recency_hours"] = (current_time - combined["published_at"]).dt.total_seconds() / 3600
-        combined["recency_hours"] = combined["recency_hours"].clip(lower=0).fillna(query.lookback_days * 24)
+    combined = enrich_trend_items(combined, query.lookback_days, now=current_time)
+    combined = filter_to_lookback(combined, query.lookback_days)
     return combined, pd.DataFrame(statuses)
+
+
+def enrich_trend_items(frame: pd.DataFrame, lookback_days: int, now: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Attach published_at/sentiment/channel/recency columns to raw trend rows."""
+    if frame.empty:
+        return frame
+    current_time = _coerce_utc_timestamp(now)
+    enriched = frame.copy()
+    enriched["published_at"] = pd.to_datetime(enriched["published_at"], errors="coerce", utc=True)
+    enriched["sentiment"] = enriched.apply(lambda row: sentiment_score(f"{row['title']} {row['snippet']}"), axis=1)
+    enriched["channel"] = enriched.apply(lambda row: detect_channel(f"{row['title']} {row['snippet']}"), axis=1)
+    enriched["recency_hours"] = (current_time - enriched["published_at"]).dt.total_seconds() / 3600
+    enriched["recency_hours"] = enriched["recency_hours"].clip(lower=0).fillna(lookback_days * 24)
+    return enriched
+
+
+def filter_to_lookback(frame: pd.DataFrame, lookback_days: int) -> pd.DataFrame:
+    """Drop live-feed rows older than the lookback window so charts honor it."""
+    if frame.empty:
+        return frame
+    windowed = frame["source"].isin(WINDOWED_SOURCES)
+    within = frame["recency_hours"] <= lookback_days * 24
+    return frame[~windowed | within].reset_index(drop=True)
+
+
+# GDELT allows roughly one request every five seconds; pace sequential calls so
+# multi-keyword refreshes don't lose every keyword after the first to 429s.
+GDELT_MIN_INTERVAL_SECONDS = 5.0
+_last_gdelt_call = 0.0
+
+
+def _respect_gdelt_rate_limit() -> None:
+    global _last_gdelt_call
+    wait = GDELT_MIN_INTERVAL_SECONDS - (time.monotonic() - _last_gdelt_call)
+    if wait > 0:
+        time.sleep(wait)
+    _last_gdelt_call = time.monotonic()
 
 
 def fetch_gdelt(
     keyword: str,
     max_records: int = 25,
-    request_get: Callable[..., object] = requests.get,
     lookback_days: int = 7,
+    search_query: str | None = None,
+    request_get: Callable[..., object] = requests.get,
     now: pd.Timestamp | None = None,
 ) -> tuple[pd.DataFrame, dict[str, str]]:
     current_time = _coerce_utc_timestamp(now)
+    cutoff = _lookback_cutoff(lookback_days, current_time)
     url = "https://api.gdeltproject.org/api/v2/doc/doc"
     params = {
-        "query": keyword,
+        "query": search_query or keyword,
         "mode": "ArtList",
         "format": "json",
-        "maxrecords": max_records,
-        "sort": "HybridRel",
-        "startdatetime": _gdelt_datetime(_lookback_cutoff(lookback_days, current_time)),
+        "maxrecords": min(max_records, 250),
+        # Restrict results to the lookback window so volume charts reflect it.
+        "timespan": f"{max(int(lookback_days), 1)}d",
+        "startdatetime": _gdelt_datetime(cutoff),
         "enddatetime": _gdelt_datetime(current_time),
+        "sort": "HybridRel",
     }
+    live_request = request_get is requests.get
     try:
+        if live_request:
+            _respect_gdelt_rate_limit()
         response = request_get(url, params=params, timeout=12)
         status_code = getattr(response, "status_code", 200)
+        if status_code == 429 and live_request:
+            # One paced retry before giving up on this keyword.
+            time.sleep(GDELT_MIN_INTERVAL_SECONDS)
+            response = request_get(url, params=params, timeout=12)
+            status_code = getattr(response, "status_code", 200)
         if status_code == 429:
             return empty_trend_frame(), _status("GDELT", keyword, "rate limited", "GDELT allows roughly one request every five seconds")
         response.raise_for_status()
@@ -159,12 +287,7 @@ def fetch_gdelt_timeline(
     baseline_days: int = 84,
     request_get: Callable[..., object] = requests.get,
 ) -> tuple[pd.DataFrame, dict[str, str]]:
-    """Fetch a daily news-volume time series for a keyword from GDELT's TimelineVolRaw mode.
-
-    Returns a tidy frame with columns ``date``, ``keyword``, ``volume``, ``norm`` covering the
-    trailing ``baseline_days`` window. The longer baseline window lets callers compare the recent
-    ``lookback_days`` against the keyword's own trailing history. No API key is required.
-    """
+    """Fetch a daily GDELT news-volume series for a keyword."""
     span = max(int(baseline_days), int(lookback_days), 1)
     url = "https://api.gdeltproject.org/api/v2/doc/doc"
     params = {
@@ -174,9 +297,16 @@ def fetch_gdelt_timeline(
         "timespan": f"{span}d",
         "timelinesmooth": 3,
     }
+    live_request = request_get is requests.get
     try:
+        if live_request:
+            _respect_gdelt_rate_limit()
         response = request_get(url, params=params, timeout=12)
         status_code = getattr(response, "status_code", 200)
+        if status_code == 429 and live_request:
+            time.sleep(GDELT_MIN_INTERVAL_SECONDS)
+            response = request_get(url, params=params, timeout=12)
+            status_code = getattr(response, "status_code", 200)
         if status_code == 429:
             return empty_timeline_frame(), _status("GDELT timeline", keyword, "rate limited", "GDELT allows roughly one request every five seconds")
         response.raise_for_status()
@@ -203,11 +333,7 @@ def fetch_gdelt_timeline(
 
 
 def build_daily_series(items: pd.DataFrame, lookback_days: int = 7) -> pd.DataFrame:
-    """Bucket item-level signals (Reddit, YouTube, GDELT articles) into per-day counts.
-
-    Produces the same ``date, keyword, volume, norm`` schema as :func:`fetch_gdelt_timeline` so it
-    can stand in as a corroborating series or a fallback when the GDELT timeline is unavailable.
-    """
+    """Bucket item-level trend signals into daily counts."""
     if items.empty:
         return empty_timeline_frame()
     df = items.copy()
@@ -220,34 +346,31 @@ def build_daily_series(items: pd.DataFrame, lookback_days: int = 7) -> pd.DataFr
     return grouped[["date", "keyword", "volume", "norm"]].sort_values(["keyword", "date"]).reset_index(drop=True)
 
 
-def fetch_reddit(
-    keyword: str,
-    max_records: int = 25,
-    lookback_days: int = 7,
-    now: pd.Timestamp | None = None,
-) -> tuple[pd.DataFrame, dict[str, str]]:
-    encoded = quote_plus(keyword)
-    current_time = _coerce_utc_timestamp(now)
-    cutoff = _lookback_cutoff(lookback_days, current_time)
-    url = f"https://www.reddit.com/search.rss?q={encoded}&sort=new&t={_reddit_time_window(lookback_days)}"
+def fetch_reddit(keyword: str, max_records: int = 25, lookback_days: int = 7, search_query: str | None = None) -> tuple[pd.DataFrame, dict[str, str]]:
+    encoded = quote_plus(search_query or keyword)
+    window = "day" if lookback_days <= 1 else ("week" if lookback_days <= 7 else "month")
+    url = f"https://www.reddit.com/search.rss?q={encoded}&sort=new&t={window}&limit={min(max_records, 100)}"
     try:
         feed = feedparser.parse(url, request_headers={"User-Agent": "marketing-intel-streamlit/1.0"})
         entries = feed.entries[:max_records]
+        # Report blocked or malformed responses as failures instead of "ok, 0 posts".
+        http_status = int(getattr(feed, "status", 200) or 200)
+        if http_status >= 400:
+            return empty_trend_frame(), _status("Reddit", keyword, "failed", f"HTTP {http_status} from Reddit RSS (often IP blocking on cloud hosts)")
+        if not entries and getattr(feed, "bozo", False):
+            return empty_trend_frame(), _status("Reddit", keyword, "failed", f"Unparseable feed: {getattr(feed, 'bozo_exception', 'unknown error')}")
     except Exception as exc:  # pragma: no cover
         return empty_trend_frame(), _status("Reddit", keyword, "failed", str(exc))
 
     rows = []
     for entry in entries:
-        published_at = _parse_struct_time(entry.get("published_parsed"))
-        if published_at < cutoff:
-            continue
         rows.append(
             {
                 "source": "Reddit",
                 "keyword": keyword,
                 "title": entry.get("title", "Untitled Reddit post"),
                 "url": entry.get("link", ""),
-                "published_at": published_at,
+                "published_at": _parse_struct_time(entry.get("published_parsed")),
                 "snippet": _strip_html(entry.get("summary", ""))[:350],
                 "author": entry.get("author", ""),
                 "engagement": float(entry.get("score", 0) or 0),
@@ -260,29 +383,33 @@ def fetch_youtube(
     keyword: str,
     api_key: str | None,
     max_records: int = 25,
-    request_get: Callable[..., object] = requests.get,
     lookback_days: int = 7,
+    request_get: Callable[..., object] = requests.get,
     now: pd.Timestamp | None = None,
 ) -> tuple[pd.DataFrame, dict[str, str]]:
     if not api_key:
         return empty_trend_frame(), _status("YouTube", keyword, "not configured", "Set YOUTUBE_API_KEY in Streamlit secrets")
-    current_time = _coerce_utc_timestamp(now)
     url = "https://www.googleapis.com/youtube/v3/search"
+    published_after = _youtube_datetime(_lookback_cutoff(lookback_days, _coerce_utc_timestamp(now)))
     params = {
         "part": "snippet",
         "q": keyword,
         "type": "video",
         "order": "date",
+        "publishedAfter": published_after,
         "maxResults": min(max_records, 50),
-        "publishedAfter": _youtube_datetime(_lookback_cutoff(lookback_days, current_time)),
         "key": api_key,
     }
     try:
         response = request_get(url, params=params, timeout=12)
+        status_code = getattr(response, "status_code", 200)
+        if status_code >= 400:
+            # Surface the API's own explanation; never echo the request URL, which carries the API key.
+            return empty_trend_frame(), _status("YouTube", keyword, "failed", response_error_detail(response, status_code))
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:  # pragma: no cover
-        return empty_trend_frame(), _status("YouTube", keyword, "failed", str(exc))
+        return empty_trend_frame(), _status("YouTube", keyword, "failed", strip_query_strings(str(exc)))
 
     rows = []
     for item in payload.get("items", [])[:max_records]:
@@ -339,22 +466,58 @@ def load_trends_export(
         selected = {keyword.lower() for keyword in keywords}
         frame = frame[frame["keyword"].astype(str).str.lower().isin(selected)].copy()
     if lookback_days is not None:
-        frame = _filter_by_lookback(frame, lookback_days, current_time)
-    return frame.reset_index(drop=True), _status(source_name, "export", "ok", f"{len(frame)} rows after filters")
+        frame["published_at"] = pd.to_datetime(frame["published_at"], errors="coerce", utc=True).fillna(current_time)
+        frame = frame[frame["published_at"] >= _lookback_cutoff(lookback_days, current_time)]
+    frame = frame.reset_index(drop=True)
+    detail = f"{len(frame)} rows after filters" if keywords or lookback_days is not None else f"{len(frame)} rows"
+    return frame, _status(source_name, "export", "ok", detail)
 
 
-def compute_trend_summary(items: pd.DataFrame) -> pd.DataFrame:
+def compute_trend_summary(items: pd.DataFrame, lookback_days: int = 7) -> pd.DataFrame:
+    """Per keyword/source: mention counts plus momentum.
+
+    Velocity is the percent change in mentions between the most recent half of
+    the lookback window and the earlier half, labeled Accelerating / Steady /
+    Cooling so the number reads directly.
+    """
+    columns = ["keyword", "source", "mentions", "recent_mentions", "velocity", "momentum", "avg_sentiment", "engagement"]
     if items.empty:
-        return pd.DataFrame(columns=["keyword", "source", "mentions", "velocity", "avg_sentiment", "engagement"])
+        return pd.DataFrame(columns=columns)
     df = items.copy()
-    df["recency_weight"] = 1 / (1 + df["recency_hours"].fillna(168) / 24)
+    half_window_hours = lookback_days * 24 / 2
+    df["is_recent"] = df["recency_hours"].fillna(lookback_days * 24) <= half_window_hours
     summary = df.groupby(["keyword", "source"], as_index=False).agg(
         mentions=("title", "count"),
-        velocity=("recency_weight", "sum"),
+        recent_mentions=("is_recent", "sum"),
         avg_sentiment=("sentiment", "mean"),
         engagement=("engagement", "sum"),
     )
-    return summary.sort_values(["velocity", "mentions"], ascending=False)
+    earlier = summary["mentions"] - summary["recent_mentions"]
+    summary["velocity"] = np.where(
+        earlier > 0,
+        (summary["recent_mentions"] - earlier) / earlier * 100,
+        np.where(summary["recent_mentions"] > 0, 100.0, 0.0),
+    )
+    summary["momentum"] = np.select(
+        [summary["velocity"] >= ACCELERATING_THRESHOLD, summary["velocity"] <= COOLING_THRESHOLD],
+        ["Accelerating", "Cooling"],
+        default="Steady",
+    )
+    return summary[columns].sort_values(["velocity", "mentions"], ascending=False)
+
+
+def summarize_channels(items: pd.DataFrame) -> pd.DataFrame:
+    """Mentions of specific marketing channels per keyword, for the channel breakdown chart."""
+    if items.empty or "channel" not in items.columns:
+        return pd.DataFrame(columns=["channel", "keyword", "mentions", "avg_sentiment"])
+    classified = items[items["channel"] != NO_CHANNEL_LABEL]
+    if classified.empty:
+        return pd.DataFrame(columns=["channel", "keyword", "mentions", "avg_sentiment"])
+    return (
+        classified.groupby(["channel", "keyword"], as_index=False)
+        .agg(mentions=("title", "count"), avg_sentiment=("sentiment", "mean"))
+        .sort_values("mentions", ascending=False)
+    )
 
 
 def recommend_campaign_angles(summary: pd.DataFrame, items: pd.DataFrame) -> pd.DataFrame:
@@ -362,14 +525,19 @@ def recommend_campaign_angles(summary: pd.DataFrame, items: pd.DataFrame) -> pd.
         return pd.DataFrame(columns=["keyword", "angle", "rationale"])
     rows = []
     for keyword, group in summary.groupby("keyword"):
-        velocity = float(group["velocity"].sum())
+        mentions = int(group["mentions"].sum())
+        recent = int(group["recent_mentions"].sum())
+        earlier = mentions - recent
+        velocity = ((recent - earlier) / earlier * 100) if earlier > 0 else (100.0 if recent > 0 else 0.0)
         sentiment = float(group["avg_sentiment"].mean())
         top_source = group.sort_values("mentions", ascending=False).iloc[0]["source"]
+        momentum = "accelerating" if velocity >= ACCELERATING_THRESHOLD else ("cooling" if velocity <= COOLING_THRESHOLD else "steady")
+        tone = "positive" if sentiment > 0.15 else ("negative" if sentiment < -0.15 else "neutral")
         if sentiment > 0.15:
             angle = "Lean into proof and momentum"
         elif sentiment < -0.15:
             angle = "Address objections directly"
-        elif velocity >= summary["velocity"].quantile(0.70):
+        elif velocity >= ACCELERATING_THRESHOLD:
             angle = "Launch timely educational creative"
         else:
             angle = "Monitor and test low-budget creative"
@@ -377,20 +545,18 @@ def recommend_campaign_angles(summary: pd.DataFrame, items: pd.DataFrame) -> pd.
             {
                 "keyword": keyword,
                 "angle": angle,
-                "rationale": f"{top_source} is the leading source with velocity {velocity:.1f} and sentiment {sentiment:.2f}.",
+                "rationale": (
+                    f"{mentions} mentions, {momentum} ({velocity:+.0f}% recent half vs earlier half) "
+                    f"with {tone} sentiment ({sentiment:+.2f}); most coverage from {top_source}."
+                ),
             }
         )
     return pd.DataFrame(rows).sort_values("keyword")
 
 
 def sentiment_score(text: str) -> float:
-    words = {word.strip(".,!?;:()[]{}\"'").lower() for word in str(text).split()}
-    positive = len(words.intersection(POSITIVE_WORDS))
-    negative = len(words.intersection(NEGATIVE_WORDS))
-    total = positive + negative
-    if total == 0:
-        return 0.0
-    return (positive - negative) / total
+    """VADER compound score in [-1, 1]; built for short social/news text."""
+    return float(_vader().polarity_scores(str(text))["compound"])
 
 
 def empty_trend_frame() -> pd.DataFrame:
@@ -430,38 +596,15 @@ def _coerce_utc_timestamp(value: pd.Timestamp | None) -> pd.Timestamp:
 
 
 def _lookback_cutoff(lookback_days: int, now: pd.Timestamp) -> pd.Timestamp:
-    days = max(int(lookback_days), 1)
-    return now - pd.Timedelta(days=days)
-
-
-def _filter_by_lookback(frame: pd.DataFrame, lookback_days: int, now: pd.Timestamp) -> pd.DataFrame:
-    if frame.empty:
-        return frame.copy()
-    df = frame.copy()
-    df["published_at"] = pd.to_datetime(df["published_at"], errors="coerce", utc=True).fillna(now)
-    return df[df["published_at"] >= _lookback_cutoff(lookback_days, now)].reset_index(drop=True)
+    return now - pd.Timedelta(days=max(int(lookback_days), 1))
 
 
 def _gdelt_datetime(value: pd.Timestamp) -> str:
-    timestamp = _coerce_utc_timestamp(value)
-    return timestamp.strftime("%Y%m%d%H%M%S")
+    return _coerce_utc_timestamp(value).strftime("%Y%m%d%H%M%S")
 
 
 def _youtube_datetime(value: pd.Timestamp) -> str:
-    timestamp = _coerce_utc_timestamp(value)
-    return timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _reddit_time_window(lookback_days: int) -> str:
-    if lookback_days <= 1:
-        return "day"
-    if lookback_days <= 7:
-        return "week"
-    if lookback_days <= 30:
-        return "month"
-    if lookback_days <= 365:
-        return "year"
-    return "all"
+    return _coerce_utc_timestamp(value).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _strip_html(value: str) -> str:

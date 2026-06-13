@@ -3,23 +3,18 @@ from __future__ import annotations
 import pandas as pd
 
 from data_sources.competitor_sources import (
+    LIVE_LINK_ASSET_TYPE,
+    MARKET_SCAN_LABEL,
     CompetitorQuery,
-    MARKET_WIDE_COMPETITOR,
     analyze_creative_patterns,
-    build_strategy_recommendations,
-    build_theme_cta_matrix,
     compute_share_of_voice,
     detect_cta,
     detect_theme,
-    enrich_competitor_items,
-    empty_competitor_frame,
+    exclude_live_link_rows,
     fetch_competitor_intelligence,
-    fetch_linkedin_ad_library_link,
     fetch_meta_ad_library,
     fetch_tiktok_creative_center_link,
-    fetch_x_ads_repository_link,
     parse_competitors,
-    summarize_competitive_signals,
 )
 
 
@@ -49,12 +44,35 @@ def test_parse_competitors_deduplicates() -> None:
     assert parse_competitors("HubSpot, Salesforce\nHubSpot") == ("HubSpot", "Salesforce")
 
 
-def test_meta_ad_library_without_token_returns_public_search_status() -> None:
+def test_meta_ad_library_without_token_returns_public_search_link() -> None:
     frame, status = fetch_meta_ad_library("HubSpot AI", "HubSpot", access_token=None)
 
-    assert frame.empty
     assert status["status"] == "not configured"
     assert "facebook.com/ads/library" in status["detail"]
+    assert len(frame) == 1
+    assert frame.loc[0, "asset_type"] == LIVE_LINK_ASSET_TYPE
+    assert "facebook.com/ads/library" in frame.loc[0, "url"]
+
+
+def test_meta_ad_library_empty_us_result_explains_eu_coverage() -> None:
+    class EmptyResponse:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"data": []}
+
+    frame, status = fetch_meta_ad_library("Beauty", "Beauty", access_token="token", country="US", request_get=lambda *a, **k: EmptyResponse())
+
+    assert frame.empty
+    assert status["status"] == "ok"
+    assert "EU markets" in status["detail"]
+
+    # EU markets do not need the note.
+    _, eu_status = fetch_meta_ad_library("Beauty", "Beauty", access_token="token", country="DE", request_get=lambda *a, **k: EmptyResponse())
+    assert "EU markets" not in eu_status["detail"]
 
 
 def test_meta_ad_library_parses_api_payload() -> None:
@@ -74,27 +92,8 @@ def test_tiktok_creative_center_returns_live_link_item() -> None:
 
     assert status["status"] == "live link"
     assert len(frame) == 1
+    assert frame.loc[0, "asset_type"] == LIVE_LINK_ASSET_TYPE
     assert "creativecenter" in frame.loc[0, "url"]
-
-
-def test_linkedin_ad_library_returns_live_link_item() -> None:
-    frame, status = fetch_linkedin_ad_library_link("Acme AI", "Acme")
-
-    assert status["status"] == "live link"
-    assert len(frame) == 1
-    assert frame.loc[0, "source"] == "LinkedIn Ad Library"
-    assert "linkedin.com/ads/library" in frame.loc[0, "url"]
-    assert frame.loc[0, "platforms"] == "LinkedIn"
-
-
-def test_x_ads_repository_returns_eu_only_live_link_item() -> None:
-    frame, status = fetch_x_ads_repository_link("Acme AI", "Acme")
-
-    assert status["status"] == "live link"
-    assert len(frame) == 1
-    assert frame.loc[0, "source"] == "X Ads Repository (EU Only)"
-    assert "ads.twitter.com/ads-repository" in frame.loc[0, "url"]
-    assert "EU Digital Services Act" in frame.loc[0, "text"]
 
 
 def test_detect_cta_and_theme() -> None:
@@ -104,142 +103,131 @@ def test_detect_cta_and_theme() -> None:
     assert detect_theme(text) == "AI"
 
 
-def test_share_of_voice_and_creative_patterns() -> None:
-    frame, _ = fetch_tiktok_creative_center_link("Acme AI", "Acme")
-    other, _ = fetch_tiktok_creative_center_link("Beta AI", "Beta")
-    items = pd.concat([frame, other], ignore_index=True)
-    items["sentiment"] = [0.1, 0.2]
+def test_detect_cta_requires_word_boundaries() -> None:
+    # "sale" must not match inside "Salesforce".
+    assert detect_cta("Salesforce announces quarterly results") == "No explicit CTA"
+    assert detect_cta("Huge sale this weekend") == "Shop now"
+
+
+def test_detect_theme_requires_word_boundaries() -> None:
+    # "ai" must not match inside "email", "Spain", "domain", or "maintain".
+    assert detect_theme("Spain retail report from domain.com") != "AI"
+    assert detect_theme("maintaining brand safety") != "AI"
+    assert detect_theme("AI marketing tools compared") == "AI"
+
+
+def test_share_of_voice_and_creative_patterns_exclude_live_links() -> None:
+    link_frame, _ = fetch_tiktok_creative_center_link("Acme AI", "Acme")
+    real_rows = pd.DataFrame(
+        [
+            {
+                "source": "Reddit",
+                "competitor": "Acme",
+                "keyword": "Acme AI",
+                "asset_type": "Social mention",
+                "title": "Acme launches AI automation suite",
+                "text": "free trial available",
+                "url": "https://example.com/post",
+                "published_at": pd.Timestamp.now(tz="UTC"),
+                "author": "user",
+                "platforms": "Reddit",
+                "engagement": 4.0,
+            },
+            {
+                "source": "Reddit",
+                "competitor": "Beta",
+                "keyword": "Beta AI",
+                "asset_type": "Social mention",
+                "title": "Beta review thread",
+                "text": "",
+                "url": "https://example.com/post2",
+                "published_at": pd.Timestamp.now(tz="UTC"),
+                "author": "user",
+                "platforms": "Reddit",
+                "engagement": 1.0,
+            },
+        ]
+    )
+    items = pd.concat([link_frame, real_rows], ignore_index=True)
+    items["sentiment"] = 0.1
     items["cta"] = items["text"].map(detect_cta)
-    items["theme"] = items["text"].map(detect_theme)
+    items["theme"] = items["title"].map(detect_theme)
 
     sov = compute_share_of_voice(items)
     patterns = analyze_creative_patterns(items)
 
     assert set(sov["competitor"]) == {"Acme", "Beta"}
+    assert "TikTok Creative Center" not in set(sov["source"])
     assert not patterns.empty
+    assert int(sov["items"].sum()) == 2
+
+
+def test_exclude_live_link_rows_keeps_real_items() -> None:
+    link_frame, _ = fetch_tiktok_creative_center_link("Acme AI", "Acme")
+    assert exclude_live_link_rows(link_frame).empty
 
 
 def test_fetch_competitor_intelligence_combines_link_sources() -> None:
     items, statuses = fetch_competitor_intelligence(
         CompetitorQuery(competitors=("Acme",), keywords=("AI",), max_items_per_source=5),
-        sources=("Meta Ad Library", "TikTok Creative Center", "LinkedIn Ad Library", "X Ads Repository (EU Only)"),
+        sources=("Meta Ad Library", "TikTok Creative Center"),
     )
 
-    assert len(items) == 3
-    assert set(statuses["source"]) == {
-        "Meta Ad Library",
-        "TikTok Creative Center",
-        "LinkedIn Ad Library",
-        "X Ads Repository (EU Only)",
-    }
-    assert items.loc[0, "competitor"] == "Acme"
+    assert len(items) == 2
+    assert set(items["asset_type"]) == {LIVE_LINK_ASSET_TYPE}
+    assert set(statuses["source"]) == {"Meta Ad Library", "TikTok Creative Center"}
+    assert set(items["competitor"]) == {"Acme"}
 
 
-def test_fetch_competitor_intelligence_supports_market_wide_theme_scan() -> None:
+def test_fetch_competitor_intelligence_market_scan_without_competitors() -> None:
     items, statuses = fetch_competitor_intelligence(
-        CompetitorQuery(competitors=(), keywords=("beauty",), max_items_per_source=5),
+        CompetitorQuery(competitors=(), keywords=("retail media", "influencer marketing"), max_items_per_source=5),
         sources=("TikTok Creative Center",),
     )
 
-    assert len(items) == 1
-    assert items.loc[0, "competitor"] == MARKET_WIDE_COMPETITOR
-    assert items.loc[0, "keyword"] == "beauty"
-    assert statuses.loc[0, "keyword"] == "beauty"
+    assert len(items) == 2
+    assert set(items["competitor"]) == {MARKET_SCAN_LABEL}
+    assert set(items["keyword"]) == {"retail media", "influencer marketing"}
+    assert len(statuses) == 2
 
 
-def test_fetch_competitor_intelligence_handles_all_empty_sources() -> None:
+def test_fetch_competitor_intelligence_without_token_returns_meta_link() -> None:
     items, statuses = fetch_competitor_intelligence(
         CompetitorQuery(competitors=("Acme",), keywords=("AI",), max_items_per_source=5),
         sources=("Meta Ad Library",),
     )
 
-    assert items.empty
+    assert len(items) == 1
+    assert items.loc[0, "asset_type"] == LIVE_LINK_ASSET_TYPE
     assert statuses.loc[0, "status"] == "not configured"
 
 
-def test_enrich_competitor_items_adds_decision_fields() -> None:
-    items = pd.DataFrame(
-        [
-            {
-                "source": "Meta Ad Library",
-                "competitor": "Acme",
-                "keyword": "Acme AI",
-                "asset_type": "Ad",
-                "title": "Start free trial for new AI workflow automation",
-                "text": "Save time with AI automation and trusted workflow proof.",
-                "url": "https://example.com/ad",
-                "published_at": "2026-01-25",
-                "author": "Acme",
-                "platforms": "facebook, instagram",
-                "engagement": 12.0,
-            }
-        ],
-        columns=empty_competitor_frame().columns,
-    )
-    statuses = pd.DataFrame(
-        [{"source": "Meta Ad Library", "keyword": "Acme AI", "status": "ok", "detail": "1 ad"}]
-    )
+def test_meta_ad_library_error_uses_response_message_and_hides_token() -> None:
+    class ErrorResponse:
+        status_code = 400
 
-    enriched = enrich_competitor_items(items, statuses, now=pd.Timestamp("2026-02-01T00:00:00Z"))
+        def raise_for_status(self) -> None:  # pragma: no cover - short-circuited by the status check
+            raise AssertionError("raise_for_status should not be reached")
 
-    assert enriched.loc[0, "source_confidence_label"] == "Direct source"
-    assert enriched.loc[0, "creative_format"] == "Ad Format Unknown"
-    assert enriched.loc[0, "campaign_type"] == "Lead Gen"
-    assert enriched.loc[0, "creative_angle"] == "Problem / Solution"
-    assert enriched.loc[0, "priority"] == "High"
-    assert enriched.loc[0, "recommended_action"] == "Test next"
-    assert enriched.loc[0, "freshness_days"] == 7
-    assert enriched.loc[0, "signal_strength"] > 70
+        def json(self) -> dict:
+            return {"error": {"message": "Error validating access token: session has expired", "type": "OAuthException", "code": 190}}
+
+    frame, status = fetch_meta_ad_library("Beauty", "Beauty", access_token="SECRET-TOKEN", country="US", request_get=lambda *a, **k: ErrorResponse())
+
+    assert frame.empty
+    assert status["status"] == "failed"
+    assert "HTTP 400 (OAuthException code 190)" in status["detail"]
+    assert "session has expired" in status["detail"]
+    assert "SECRET-TOKEN" not in status["detail"]
+    assert "EU markets" in status["detail"]
 
 
-def test_enrich_competitor_items_marks_setup_gaps() -> None:
-    items = pd.DataFrame(
-        [
-            {
-                "source": "Meta Ad Library",
-                "competitor": "Acme",
-                "keyword": "Acme AI",
-                "asset_type": "Ad",
-                "title": "AI launch",
-                "text": "Learn more about AI automation.",
-                "url": "https://example.com/ad",
-                "published_at": "2026-01-25",
-                "author": "Acme",
-                "platforms": "facebook",
-                "engagement": 0.0,
-            }
-        ],
-        columns=empty_competitor_frame().columns,
-    )
-    statuses = pd.DataFrame(
-        [{"source": "Meta Ad Library", "keyword": "Acme AI", "status": "not configured", "detail": "missing token"}]
-    )
+def test_meta_ad_library_exception_detail_drops_query_string() -> None:
+    def raising_get(*args, **kwargs):
+        raise RuntimeError("Max retries exceeded with url: /v21.0/ads_archive?access_token=SECRET-TOKEN&search_terms=x")
 
-    enriched = enrich_competitor_items(items, statuses, now=pd.Timestamp("2026-02-01T00:00:00Z"))
+    _, status = fetch_meta_ad_library("Beauty", "Beauty", access_token="SECRET-TOKEN", country="DE", request_get=raising_get)
 
-    assert enriched.loc[0, "priority"] == "Fix source"
-    assert enriched.loc[0, "recommended_action"] == "Fix source"
-    assert enriched.loc[0, "source_confidence_label"] == "Needs setup"
-
-
-def test_signal_summaries_matrix_and_recommendations_are_stable() -> None:
-    first, first_status = fetch_tiktok_creative_center_link("Acme AI", "Acme")
-    second, _ = fetch_tiktok_creative_center_link("Beta automation", "Beta")
-    items = pd.concat([first, second], ignore_index=True)
-    statuses = pd.DataFrame(
-        [
-            first_status,
-            {"source": "TikTok Creative Center", "keyword": "Beta automation", "status": "live link", "detail": "link"},
-        ]
-    )
-
-    enriched = enrich_competitor_items(items, statuses, now=pd.Timestamp("2026-02-01T00:00:00Z"))
-    summary = summarize_competitive_signals(enriched, statuses)
-    matrix = build_theme_cta_matrix(enriched)
-    recommendations = build_strategy_recommendations(enriched)
-
-    assert summary["items"] == 2
-    assert summary["active_sources"] == 1
-    assert summary["source_gaps"] == 0
-    assert not matrix.empty
-    assert set(recommendations["recommended_action"]) == {"Open source"}
+    assert status["status"] == "failed"
+    assert "ads_archive" in status["detail"]
+    assert "SECRET-TOKEN" not in status["detail"]
